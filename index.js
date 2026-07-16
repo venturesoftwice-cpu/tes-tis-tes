@@ -1,36 +1,29 @@
-// server.js - OpenAI to NVIDIA NIM API Proxy (Vercel Serverless Optimized)
+// index.js - OpenAI to NVIDIA NIM API Proxy (Vercel Serverless Optimized with Dynamic Key Support)
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 
 const app = express();
 
-// Middleware
 app.use(cors());
 app.use(express.json());
 
-// NVIDIA NIM API configuration
 const NIM_API_BASE = process.env.NIM_API_BASE || 'https://integrate.api.nvidia.com/v1';
 const NIM_API_KEY = process.env.NIM_API_KEY;
 
-// 🔥 REASONING DISPLAY TOGGLE - Menampilkan/menyembunyikan proses berpikir DeepSeek
 const SHOW_REASONING = true; 
-
-// 🔥 THINKING MODE TOGGLE - Mengaktifkan parameter berpikir model
 const ENABLE_THINKING_MODE = true; 
 
-// Model mapping
 const MODEL_MAPPING = {
   'gpt-3.5-turbo': 'nvidia/llama-3.1-nemotron-ultra-253b-v1',
   'gpt-4': 'qwen/qwen3-coder-480b-a35b-instruct',
   'gpt-4-turbo': 'moonshotai/kimi-k2-instruct-0905',
-  'gpt-4o': 'deepseek-ai/deepseek-v4-pro', // Diubah ke V4 Pro
+  'gpt-4o': 'deepseek-ai/deepseek-v4-pro', 
   'claude-3-opus': 'openai/gpt-oss-120b',
   'claude-3-sonnet': 'openai/gpt-oss-20b',
   'gemini-pro': 'qwen/qwen3-next-80b-a3b-thinking' 
 };
 
-// Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
@@ -40,7 +33,6 @@ app.get('/health', (req, res) => {
   });
 });
 
-// List models endpoint (OpenAI compatible)
 app.get('/v1/models', (req, res) => {
   const models = Object.keys(MODEL_MAPPING).map(model => ({
     id: model,
@@ -48,19 +40,29 @@ app.get('/v1/models', (req, res) => {
     created: Date.now(),
     owned_by: 'nvidia-nim-proxy'
   }));
-  
-  res.json({
-    object: 'list',
-    data: models
-  });
+  res.json({ object: 'list', data: models });
 });
 
-// Chat completions endpoint (main proxy)
 app.post('/v1/chat/completions', async (req, res) => {
   try {
     const { model, messages, temperature, max_tokens, stream } = req.body;
     
-    // Smart model selection dengan fallback
+    // DETEKSI API KEY DINAMIS:
+    // Jika NIM_API_KEY di Vercel kosong, baca API key yang dikirim langsung dari input Janitor AI
+    const authHeader = req.headers.authorization;
+    const clientApiKey = authHeader ? authHeader.replace('Bearer ', '').trim() : '';
+    const activeApiKey = NIM_API_KEY || clientApiKey;
+
+    if (!activeApiKey || activeApiKey === 'dummy-key') {
+      return res.status(401).json({
+        error: { 
+          message: 'API Key NVIDIA kosong atau tidak valid. Silakan masukkan API Key NVIDIA asli (nvapi-...) Anda ke dalam kolom API Key di Janitor AI.', 
+          type: 'invalid_request_error', 
+          code: 401 
+        }
+      });
+    }
+    
     let nimModel = MODEL_MAPPING[model];
     if (!nimModel) {
       try {
@@ -69,7 +71,7 @@ app.post('/v1/chat/completions', async (req, res) => {
           messages: [{ role: 'user', content: 'test' }],
           max_tokens: 1
         }, {
-          headers: { 'Authorization': `Bearer ${NIM_API_KEY}`, 'Content-Type': 'application/json' },
+          headers: { 'Authorization': `Bearer ${activeApiKey}`, 'Content-Type': 'application/json' },
           validateStatus: (status) => status < 500
         }).then(res => {
           if (res.status >= 200 && res.status < 300) {
@@ -83,7 +85,6 @@ app.post('/v1/chat/completions', async (req, res) => {
       }
     }
     
-    // Transform OpenAI request ke NIM format
     const nimRequest = {
       model: nimModel,
       messages: messages,
@@ -93,17 +94,15 @@ app.post('/v1/chat/completions', async (req, res) => {
       stream: stream || false
     };
     
-    // Kirim request ke NVIDIA NIM API
     const response = await axios.post(`${NIM_API_BASE}/chat/completions`, nimRequest, {
       headers: {
-        'Authorization': `Bearer ${NIM_API_KEY}`,
+        'Authorization': `Bearer ${activeApiKey}`,
         'Content-Type': 'application/json'
       },
       responseType: stream ? 'stream' : 'json'
     });
     
     if (stream) {
-      // Menangani streaming response dengan reasoning
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
@@ -173,7 +172,6 @@ app.post('/v1/chat/completions', async (req, res) => {
         res.end();
       });
     } else {
-      // Transform NIM response ke OpenAI format
       const openaiResponse = {
         id: `chatcmpl-${Date.now()}`,
         object: 'chat.completion',
@@ -201,13 +199,10 @@ app.post('/v1/chat/completions', async (req, res) => {
           total_tokens: 0
         }
       };
-      
       res.json(openaiResponse);
     }
-    
   } catch (error) {
     console.error('Proxy error:', error.message);
-    
     res.status(error.response?.status || 500).json({
       error: {
         message: error.message || 'Internal server error',
@@ -218,16 +213,10 @@ app.post('/v1/chat/completions', async (req, res) => {
   }
 });
 
-// Catch-all untuk endpoint yang tidak didukung
 app.all('*', (req, res) => {
   res.status(404).json({
-    error: {
-      message: `Endpoint ${req.path} not found`,
-      type: 'invalid_request_error',
-      code: 404
-    }
+    error: { message: `Endpoint ${req.path} not found`, type: 'invalid_request_error', code: 404 }
   });
 });
 
-// Mengekspor Express agar diatur oleh Vercel secara serverless (tanpa app.listen)
 module.exports = app;
