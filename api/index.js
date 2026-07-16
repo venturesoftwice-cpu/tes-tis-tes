@@ -1,4 +1,4 @@
-// index.js - OpenAI to NVIDIA NIM API Proxy (Vercel Serverless Optimized with Dynamic Key Support)
+// index.js - OpenAI to NVIDIA NIM API Proxy (Vercel Serverless Optimized with Dynamic Key & Parameter Fix)
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -47,8 +47,7 @@ app.post('/v1/chat/completions', async (req, res) => {
   try {
     const { model, messages, temperature, max_tokens, stream } = req.body;
     
-    // DETEKSI API KEY DINAMIS:
-    // Jika NIM_API_KEY di Vercel kosong, baca API key yang dikirim langsung dari input Janitor AI
+    // Ambil API Key dari header kiriman Janitor AI jika Env Variable Vercel kosong
     const authHeader = req.headers.authorization;
     const clientApiKey = authHeader ? authHeader.replace('Bearer ', '').trim() : '';
     const activeApiKey = NIM_API_KEY || clientApiKey;
@@ -56,7 +55,7 @@ app.post('/v1/chat/completions', async (req, res) => {
     if (!activeApiKey || activeApiKey === 'dummy-key') {
       return res.status(401).json({
         error: { 
-          message: 'API Key NVIDIA kosong atau tidak valid. Silakan masukkan API Key NVIDIA asli (nvapi-...) Anda ke dalam kolom API Key di Janitor AI.', 
+          message: 'API Key NVIDIA kosong. Silakan tempelkan API Key NVIDIA (nvapi-...) Anda di kolom API Key Janitor AI.', 
           type: 'invalid_request_error', 
           code: 401 
         }
@@ -85,12 +84,14 @@ app.post('/v1/chat/completions', async (req, res) => {
       }
     }
     
+    // Struktur data yang dikirim ke NVIDIA
     const nimRequest = {
       model: nimModel,
       messages: messages,
       temperature: temperature || 0.6,
       max_tokens: max_tokens || 9024,
-      extra_body: ENABLE_THINKING_MODE ? { chat_template_kwargs: { thinking: true } } : undefined,
+      // PERBAIKAN: Meletakkan parameter berpikir langsung di root payload (bukan di dalam extra_body)
+      chat_template_kwargs: ENABLE_THINKING_MODE ? { thinking: true } : undefined,
       stream: stream || false
     };
     
@@ -203,9 +204,16 @@ app.post('/v1/chat/completions', async (req, res) => {
     }
   } catch (error) {
     console.error('Proxy error:', error.message);
+    
+    // PERBAIKAN: Menampilkan detail pesan penolakan asli dari NVIDIA ke log Vercel agar mudah dianalisis
+    if (error.response?.data) {
+      console.error('NVIDIA Error Details:', JSON.stringify(error.response.data));
+    }
+    
     res.status(error.response?.status || 500).json({
       error: {
-        message: error.message || 'Internal server error',
+        // Meneruskan pesan error asli dari NVIDIA jika tersedia
+        message: error.response?.data?.error?.message || error.response?.data?.message || error.message || 'Internal server error',
         type: 'invalid_request_error',
         code: error.response?.status || 500
       }
