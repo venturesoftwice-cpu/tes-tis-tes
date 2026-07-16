@@ -208,4 +208,5 @@ app.all('*', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`OpenAI to NVIDIA NIM Proxy running on port ${PORT}`);
+  module.exports = app;
 });
