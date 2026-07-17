@@ -24,6 +24,33 @@ const MODEL_MAPPING = {
   'gemini-pro': 'qwen/qwen3-next-80b-a3b-thinking' 
 };
 
+// Helper function to dynamically adjust parameters based on the specific NIM model
+function getModelConfig(nimModel, enableThinking) {
+  let maxTokens = 16384; 
+  let chatTemplateKwargs = undefined;
+
+  const modelLower = nimModel.toLowerCase();
+
+  if (modelLower.includes('gemma-4')) {
+    maxTokens = 16384;
+    chatTemplateKwargs = enableThinking ? { enable_thinking: true } : undefined;
+  } 
+  else if (modelLower.includes('deepseek-v4') || modelLower.includes('deepseek')) {
+    maxTokens = 16384;
+    chatTemplateKwargs = enableThinking ? { thinking: true, reasoning_effort: "high" } : undefined;
+  }
+  else if (modelLower.includes('inkling')) {
+    maxTokens = 8192; // Inkling's max output token limit
+    chatTemplateKwargs = undefined; 
+  }
+  else if (modelLower.includes('glm-5.2')) {
+    maxTokens = 16384;
+    chatTemplateKwargs = enableThinking ? { thinking: { type: "enabled" }, reasoning_effort: "high" } : undefined;
+  }
+
+  return { maxTokens, chatTemplateKwargs };
+}
+
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
@@ -84,14 +111,17 @@ app.post('/v1/chat/completions', async (req, res) => {
       }
     }
     
+    // Dapatkan konfigurasi token & parameter berpikir yang sesuai
+    const config = getModelConfig(nimModel, ENABLE_THINKING_MODE);
+
     // Struktur data yang dikirim ke NVIDIA
     const nimRequest = {
       model: nimModel,
       messages: messages,
-      temperature: temperature || 0.6,
-      max_tokens: max_tokens || 9024,
-      // PERBAIKAN: Meletakkan parameter berpikir langsung di root payload (bukan di dalam extra_body)
-      chat_template_kwargs: ENABLE_THINKING_MODE ? { thinking: true } : undefined,
+      temperature: temperature !== undefined ? temperature : 0.7,
+      // Capping tokens dynamically to avoid exceeding model-specific limits
+      max_tokens: max_tokens ? Math.min(max_tokens, config.maxTokens) : config.maxTokens,
+      chat_template_kwargs: config.chatTemplateKwargs,
       stream: stream || false
     };
     
@@ -126,7 +156,8 @@ app.post('/v1/chat/completions', async (req, res) => {
             try {
               const data = JSON.parse(line.slice(6));
               if (data.choices?.[0]?.delta) {
-                const reasoning = data.choices[0].delta.reasoning_content;
+                // Mencari field reasoning_content atau reasoning (beberapa model menggunakan nama berbeda)
+                const reasoning = data.choices[0].delta.reasoning_content || data.choices[0].delta.reasoning;
                 const content = data.choices[0].delta.content;
                 
                 if (SHOW_REASONING) {
@@ -149,6 +180,7 @@ app.post('/v1/chat/completions', async (req, res) => {
                   if (combinedContent) {
                     data.choices[0].delta.content = combinedContent;
                     delete data.choices[0].delta.reasoning_content;
+                    delete data.choices[0].delta.reasoning;
                   }
                 } else {
                   if (content) {
@@ -157,6 +189,7 @@ app.post('/v1/chat/completions', async (req, res) => {
                     data.choices[0].delta.content = '';
                   }
                   delete data.choices[0].delta.reasoning_content;
+                  delete data.choices[0].delta.reasoning;
                 }
               }
               res.write(`data: ${JSON.stringify(data)}\n\n`);
@@ -180,9 +213,10 @@ app.post('/v1/chat/completions', async (req, res) => {
         model: model,
         choices: response.data.choices.map(choice => {
           let fullContent = choice.message?.content || '';
+          const reasoningText = choice.message?.reasoning_content || choice.message?.reasoning;
           
-          if (SHOW_REASONING && choice.message?.reasoning_content) {
-            fullContent = '<think>\n' + choice.message.reasoning_content + '\n</think>\n\n' + fullContent;
+          if (SHOW_REASONING && reasoningText) {
+            fullContent = '<think>\n' + reasoningText + '\n</think>\n\n' + fullContent;
           }
           
           return {
@@ -205,14 +239,12 @@ app.post('/v1/chat/completions', async (req, res) => {
   } catch (error) {
     console.error('Proxy error:', error.message);
     
-    // PERBAIKAN: Menampilkan detail pesan penolakan asli dari NVIDIA ke log Vercel agar mudah dianalisis
     if (error.response?.data) {
       console.error('NVIDIA Error Details:', JSON.stringify(error.response.data));
     }
     
     res.status(error.response?.status || 500).json({
       error: {
-        // Meneruskan pesan error asli dari NVIDIA jika tersedia
         message: error.response?.data?.error?.message || error.response?.data?.message || error.message || 'Internal server error',
         type: 'invalid_request_error',
         code: error.response?.status || 500
