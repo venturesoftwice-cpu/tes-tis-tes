@@ -6,7 +6,9 @@ const axios = require('axios');
 const app = express();
 
 app.use(cors());
-app.use(express.json());
+// Set incoming payload size limit to 4.5 MB to allow up to 1M token context windows
+app.use(express.json({ limit: '4.5mb' }));
+app.use(express.urlencoded({ limit: '4.5mb', extended: true }));
 
 const NIM_API_BASE = process.env.NIM_API_BASE || 'https://integrate.api.nvidia.com/v1';
 const NIM_API_KEY = process.env.NIM_API_KEY;
