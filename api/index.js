@@ -119,7 +119,7 @@ app.post('/v1/chat/completions', async (req, res) => {
     }
 
     // Determine destination pathway
-    const isAIStudio = nimModel && (nimModel.startsWith('gemini-3') || nimModel.startsWith('gemma-4') || nimModel.startsWith('gemma-26b'));
+    const isAIStudio = nimModel && (nimModel.startsWith('gemini-') || nimModel.startsWith('gemma-4') || nimModel.startsWith('gemma-26b'));
 
     // --- Google AI Studio Pathway ---
     if (isAIStudio) {
@@ -139,21 +139,35 @@ app.post('/v1/chat/completions', async (req, res) => {
         return `${role}: ${m.content}`;
       }).join('\n\n');
 
+      // 1. Dynamic Endpoint Selection: beta models on /v1beta, stable on /v1
+      const isBetaModel = nimModel.includes('preview') || nimModel.includes('3.6') || nimModel.includes('gemma-4') || nimModel.includes('gemma-26b');
+      const apiPath = isBetaModel ? 'v1beta' : 'v1';
+      const googleUrl = `https://generativelanguage.googleapis.com/${apiPath}/interactions?key=${GEMINI_API_KEY}`;
+
+      // 2. Safe thinking configuration: only apply to gemini- models to prevent 400 errors on Gemma
+      const generationConfig = {};
+      if (nimModel.startsWith('gemini-')) {
+        generationConfig.thinking_summaries = "auto";
+        generationConfig.thinking_level = "high";
+      }
+
+      const payload = {
+        model: nimModel,
+        input: formattedPrompt,
+        stream: stream || false
+      };
+
+      if (Object.keys(generationConfig).length > 0) {
+        payload.generation_config = generationConfig;
+      }
+
       const response = await axios.post(
-        `https://generativelanguage.googleapis.com/v1beta/interactions`,
-        {
-          model: nimModel,
-          input: formattedPrompt,
-          generation_config: {
-            thinking_summaries: "auto",
-            thinking_level: "high"
-          },
-          stream: stream || false
-        },
+        googleUrl,
+        payload,
         {
           headers: {
-            'x-goog-api-key': GEMINI_API_KEY,
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'Api-Revision': '2026-05-20' // Opt-in to current Interaction schema structure
           },
           responseType: stream ? 'stream' : 'json'
         }
@@ -193,7 +207,7 @@ app.post('/v1/chat/completions', async (req, res) => {
                   if (delta) {
                     let textToSend = '';
 
-                    // Intercept thought chunks [1]
+                    // Intercept thought chunks
                     if (delta.type === 'thought_summary' && delta.content?.text) {
                       if (!thinkingOpened) {
                         textToSend += '<think>\n';
@@ -201,7 +215,7 @@ app.post('/v1/chat/completions', async (req, res) => {
                       }
                       textToSend += delta.content.text;
                     } 
-                    // Intercept response text chunks [1]
+                    // Intercept response text chunks
                     else if (delta.type === 'text' && delta.text) {
                       if (thinkingOpened) {
                         textToSend += '\n</think>\n\n';
@@ -255,7 +269,7 @@ app.post('/v1/chat/completions', async (req, res) => {
         let fullText = '';
         let thoughtsText = '';
         
-        // Non-stream steps mapping according to May 2026 schema standards
+        // Non-stream steps mapping according to modern schema standards
         if (response.data.steps && Array.isArray(response.data.steps)) {
           response.data.steps.forEach(step => {
             if (step.type === 'thought' && step.summary) {
