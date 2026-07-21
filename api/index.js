@@ -150,11 +150,14 @@ app.post('/v1/chat/completions', async (req, res) => {
 
         const googleUrl = `https://generativelanguage.googleapis.com/v1beta/models/${nimModel}:${stream ? 'streamGenerateContent' : 'generateContent'}?key=${GEMINI_API_KEY}${stream ? '&alt=sse' : ''}`;
 
+        // Konfigurasi dipaksa tinggi (HIGH) & menyertakan payload proses berpikir secara eksplisit
         const payload = {
           contents: googleContents,
           generationConfig: {
             thinkingConfig: {
-              thinkingLevel: "high" // Aktifkan Thinking level tinggi pada Gemma
+              thinkingLevel: "HIGH",       // Memaksa tingkat berpikir Gemma ke tingkat tinggi
+              thinkingBudget: 4096,        // Alokasi budget token berpikir maksimal
+              includeThoughts: true        // Memastikan Google selalu menyertakan output proses berpikir
             }
           }
         };
@@ -227,7 +230,7 @@ app.post('/v1/chat/completions', async (req, res) => {
                     }
                   }
                 } catch (e) {
-                  // Skip parsing metadata lines
+                  // Skip parsing metadata
                 }
               }
             });
