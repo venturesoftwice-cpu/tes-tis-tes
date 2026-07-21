@@ -21,7 +21,7 @@ const MODEL_MAPPING = {
   'gpt-4o': 'deepseek-ai/deepseek-v4-pro', 
   'claude-3-opus': 'z-ai/glm-5.2',
   'claude-3-sonnet': 'deepseek-ai/deepseek-v4-flash',
-  'gemini-pro': 'qwen/qwen3-next-80b-a3b-thinking' 
+  'gemini-pro': 'google/diffusiongemma-26b-a4b-it' 
 };
 
 // Helper function to dynamically adjust parameters based on the specific NIM model
