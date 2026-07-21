@@ -24,12 +24,12 @@ const MODEL_MAPPING = {
   'claude-3-sonnet': 'deepseek-ai/deepseek-v4-flash',
   'gemini-pro': 'google/diffusiongemma-26b-a4b-it',
   
-  // New Google AI Studio Models
+  // Google AI Studio Models
   'gemini-3-flash': 'gemini-3.6-flash',
-  'gemma-4-31b': 'gemma-4-31b',
-  'gemma-4-26b': 'gemma-4-26b',
+  'gemma-4-31b': 'gemma-4-31b-it',
+  'gemma-4-26b': 'gemma-4-26b-a4b-it',
   
-  // New NIM Model
+  // NIM Model
   'mistral-medium-3.5': 'mistralai/mistral-medium-3.5-128b'
 };
 
@@ -119,7 +119,7 @@ app.post('/v1/chat/completions', async (req, res) => {
     }
 
     // Determine destination pathway
-    const isAIStudio = nimModel && (nimModel.startsWith('gemini-') || nimModel.startsWith('gemma-4') || nimModel.startsWith('gemma-26b'));
+    const isAIStudio = nimModel && (nimModel.startsWith('gemini-') || nimModel.startsWith('gemma-4'));
 
     // --- Google AI Studio Pathway ---
     if (isAIStudio) {
@@ -133,41 +133,137 @@ app.post('/v1/chat/completions', async (req, res) => {
         });
       }
 
-      // Context construction for the Interactions API
+      const isGemmaModel = nimModel.startsWith('gemma-4');
+
+      // --- PATHWAY A: Gemma Standard Generation (Uji Coba 1 di Colab) ---
+      if (isGemmaModel) {
+        // Map messages list to Google contents schema [1.1.1]
+        const systemMessage = messages.find(m => m.role === 'system');
+        const systemInstructionText = systemMessage ? systemMessage.content : '';
+
+        const googleContents = messages.map(m => {
+          if (m.role === 'system') return null;
+          return {
+            role: m.role === 'assistant' ? 'model' : 'user',
+            parts: [{ text: m.content }]
+          };
+        }).filter(Boolean);
+
+        const googleUrl = `https://generativelanguage.googleapis.com/v1beta/models/${nimModel}:${stream ? 'streamGenerateContent' : 'generateContent'}?key=${GEMINI_API_KEY}${stream ? '&alt=sse' : ''}`;
+
+        const payload = {
+          contents: googleContents
+        };
+
+        if (systemInstructionText) {
+          payload.systemInstruction = {
+            parts: [{ text: systemInstructionText }]
+          };
+        }
+
+        const response = await axios.post(googleUrl, payload, {
+          responseType: stream ? 'stream' : 'json'
+        });
+
+        if (stream) {
+          res.setHeader('Content-Type', 'text/event-stream');
+          res.setHeader('Cache-Control', 'no-cache');
+          res.setHeader('Connection', 'keep-alive');
+
+          let buffer = '';
+
+          response.data.on('data', (chunk) => {
+            buffer += chunk.toString();
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              const trimmed = line.trim();
+              if (!trimmed) return;
+
+              if (trimmed.startsWith('data: ')) {
+                const rawData = trimmed.slice(6);
+                try {
+                  const data = JSON.parse(rawData);
+                  const textToSend = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+
+                  if (textToSend) {
+                    const clientPayload = {
+                      id: `chatcmpl-${Date.now()}`,
+                      object: 'chat.completion.chunk',
+                      created: Math.floor(Date.now() / 1000),
+                      model: model,
+                      choices: [{
+                        index: 0,
+                        delta: { content: textToSend },
+                        finish_reason: null
+                      }]
+                    };
+                    res.write(`data: ${JSON.stringify(clientPayload)}\n\n`);
+                  }
+                } catch (e) {
+                  // Ignore parse errors on metadata or empty chunks
+                }
+              }
+            });
+          });
+
+          response.data.on('end', () => {
+            res.write('data: [DONE]\n\n');
+            res.end();
+          });
+        } else {
+          const textResponse = response.data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+          const openaiResponse = {
+            id: `chatcmpl-${Date.now()}`,
+            object: 'chat.completion',
+            created: Math.floor(Date.now() / 1000),
+            model: model,
+            choices: [{
+              index: 0,
+              message: {
+                role: 'assistant',
+                content: textResponse
+              },
+              finish_reason: 'stop'
+            }],
+            usage: {
+              prompt_tokens: 0,
+              completion_tokens: 0,
+              total_tokens: 0
+            }
+          };
+          res.json(openaiResponse);
+        }
+        return;
+      }
+
+      // --- PATHWAY B: Gemini Interactions API (Uji Coba 2 di Colab) ---
+      // Pembatasan: Tetap dipertahankan tanpa dijalankan/diuji ulang untuk menghemat kuota Anda.
       const formattedPrompt = messages.map(m => {
         const role = m.role === 'user' ? 'User' : 'Assistant';
         return `${role}: ${m.content}`;
       }).join('\n\n');
 
-      // 1. Dynamic Endpoint Selection: beta models on /v1beta, stable on /v1
-      const isBetaModel = nimModel.includes('preview') || nimModel.includes('3.6') || nimModel.includes('gemma-4') || nimModel.includes('gemma-26b');
+      const isBetaModel = nimModel.includes('preview') || nimModel.includes('3.6');
       const apiPath = isBetaModel ? 'v1beta' : 'v1';
       const googleUrl = `https://generativelanguage.googleapis.com/${apiPath}/interactions?key=${GEMINI_API_KEY}`;
 
-      // 2. Safe thinking configuration: only apply to gemini- models to prevent 400 errors on Gemma
-      const generationConfig = {};
-      if (nimModel.startsWith('gemini-')) {
-        generationConfig.thinking_summaries = "auto";
-        generationConfig.thinking_level = "high";
-      }
-
-      const payload = {
-        model: nimModel,
-        input: formattedPrompt,
-        stream: stream || false
-      };
-
-      if (Object.keys(generationConfig).length > 0) {
-        payload.generation_config = generationConfig;
-      }
-
       const response = await axios.post(
         googleUrl,
-        payload,
+        {
+          model: nimModel,
+          input: formattedPrompt,
+          generation_config: {
+            thinking_summaries: "auto",
+            thinking_level: "high"
+          },
+          stream: stream || false
+        },
         {
           headers: {
             'Content-Type': 'application/json',
-            'Api-Revision': '2026-05-20' // Opt-in to current Interaction schema structure
+            'Api-Revision': '2026-05-20'
           },
           responseType: stream ? 'stream' : 'json'
         }
@@ -269,7 +365,6 @@ app.post('/v1/chat/completions', async (req, res) => {
         let fullText = '';
         let thoughtsText = '';
         
-        // Non-stream steps mapping according to modern schema standards
         if (response.data.steps && Array.isArray(response.data.steps)) {
           response.data.steps.forEach(step => {
             if (step.type === 'thought' && step.summary) {
@@ -338,7 +433,6 @@ app.post('/v1/chat/completions', async (req, res) => {
       stream: stream || false
     };
 
-    // Apply high reasoning parameter specifically to Mistral 3.5 Medium
     if (nimModel.toLowerCase().includes('mistral-medium-3.5')) {
       nimRequest.reasoning_effort = "high";
     }
