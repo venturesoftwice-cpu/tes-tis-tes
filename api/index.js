@@ -135,7 +135,7 @@ app.post('/v1/chat/completions', async (req, res) => {
 
       const isGemmaModel = nimModel.startsWith('gemma-4');
 
-      // --- PATHWAY A: Gemma Standard Generation (Mendukung Thinking Mode via standard API) ---
+      // --- PATHWAY A: Gemma Standard Generation ---
       if (isGemmaModel) {
         const systemMessage = messages.find(m => m.role === 'system');
         const systemInstructionText = systemMessage ? systemMessage.content : '';
@@ -154,7 +154,7 @@ app.post('/v1/chat/completions', async (req, res) => {
           contents: googleContents,
           generationConfig: {
             thinkingConfig: {
-              thinkingLevel: "high" // Aktifkan Thinking level tinggi pada Gemma
+              thinkingLevel: "high" // Selalu aktifkan level berpikir maksimal secara default
             }
           }
         };
@@ -190,26 +190,31 @@ app.post('/v1/chat/completions', async (req, res) => {
                 const rawData = trimmed.slice(6);
                 try {
                   const data = JSON.parse(rawData);
-                  const part = data.candidates?.[0]?.content?.parts?.[0];
+                  const parts = data.candidates?.[0]?.content?.parts;
 
-                  if (part) {
-                    const text = part.text || "";
-                    const isThought = part.thought === true; // Deteksi chunk bagian berpikir dari Google
+                  if (parts && Array.isArray(parts)) {
                     let textToSend = "";
+                    
+                    // Iterasi seluruh parts dalam chunk agar tidak ada teks yang hilang
+                    parts.forEach(part => {
+                      const text = part.text || "";
+                      const isThought = part.thought === true;
 
-                    if (isThought) {
-                      if (!thinkingOpened) {
-                        textToSend += '<think>\n';
-                        thinkingOpened = true;
+                      if (isThought) {
+                        if (!thinkingOpened) {
+                          textToSend += '<think>\n';
+                          thinkingOpened = true;
+                        }
+                        textToSend += text;
+                      } else {
+                        // Lazy-Closing: Hanya tutup blok pemikiran jika menerima teks jawaban asli (bukan spasi kosong)
+                        if (thinkingOpened && text.trim().length > 0) {
+                          textToSend += '\n</think>\n\n';
+                          thinkingOpened = false;
+                        }
+                        textToSend += text;
                       }
-                      textToSend += text;
-                    } else {
-                      if (thinkingOpened) {
-                        textToSend += '\n</think>\n\n';
-                        thinkingOpened = false;
-                      }
-                      textToSend += text;
-                    }
+                    });
 
                     if (textToSend) {
                       const clientPayload = {
@@ -227,7 +232,7 @@ app.post('/v1/chat/completions', async (req, res) => {
                     }
                   }
                 } catch (e) {
-                  // Skip parsing metadata lines
+                  // Skip parsing metadata
                 }
               }
             });
@@ -258,7 +263,7 @@ app.post('/v1/chat/completions', async (req, res) => {
           if (response.data.candidates?.[0]?.content?.parts) {
             response.data.candidates[0].content.parts.forEach(part => {
               if (part.thought === true && part.text) {
-                thoughtsText += part.text + '\n';
+                thoughtsText += part.text;
               } else if (part.text) {
                 fullText += part.text;
               }
@@ -294,7 +299,6 @@ app.post('/v1/chat/completions', async (req, res) => {
       }
 
       // --- PATHWAY B: Gemini Interactions API ---
-      // Pembatasan: Tetap dipertahankan tanpa dijalankan/diuji ulang untuk menghemat kuota Anda.
       const formattedPrompt = messages.map(m => {
         const role = m.role === 'user' ? 'User' : 'Assistant';
         return `${role}: ${m.content}`;
