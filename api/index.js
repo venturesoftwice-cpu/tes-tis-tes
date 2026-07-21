@@ -47,6 +47,10 @@ function getModelConfig(nimModel, enableThinking) {
     maxTokens = 16384;
     chatTemplateKwargs = enableThinking ? { thinking: { type: "enabled" }, reasoning_effort: "high" } : undefined;
   }
+  else if (modelLower.includes('diffusiongemma') || modelLower.includes('gemma-26b')) {
+  maxTokens = 4096;
+  chatTemplateKwargs = enableThinking ? { enable_thinking: true } : undefined;
+}
 
   return { maxTokens, chatTemplateKwargs };
 }
