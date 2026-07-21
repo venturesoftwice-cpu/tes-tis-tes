@@ -135,8 +135,9 @@ app.post('/v1/chat/completions', async (req, res) => {
 
       const isGemmaModel = nimModel.startsWith('gemma-4');
 
-      // --- PATHWAY A: Gemma Standard Generation (Mendukung Thinking Mode via standard API) ---
+      // --- PATHWAY A: Gemma Standard Generation (Uji Coba 1 di Colab) ---
       if (isGemmaModel) {
+        // Map messages list to Google contents schema [1.1.1]
         const systemMessage = messages.find(m => m.role === 'system');
         const systemInstructionText = systemMessage ? systemMessage.content : '';
 
@@ -150,16 +151,8 @@ app.post('/v1/chat/completions', async (req, res) => {
 
         const googleUrl = `https://generativelanguage.googleapis.com/v1beta/models/${nimModel}:${stream ? 'streamGenerateContent' : 'generateContent'}?key=${GEMINI_API_KEY}${stream ? '&alt=sse' : ''}`;
 
-        // Konfigurasi dipaksa tinggi (HIGH) & menyertakan payload proses berpikir secara eksplisit
         const payload = {
-          contents: googleContents,
-          generationConfig: {
-            thinkingConfig: {
-              thinkingLevel: "HIGH",       // Memaksa tingkat berpikir Gemma ke tingkat tinggi
-              thinkingBudget: 4096,        // Alokasi budget token berpikir maksimal
-              includeThoughts: true        // Memastikan Google selalu menyertakan output proses berpikir
-            }
-          }
+          contents: googleContents
         };
 
         if (systemInstructionText) {
@@ -178,7 +171,6 @@ app.post('/v1/chat/completions', async (req, res) => {
           res.setHeader('Connection', 'keep-alive');
 
           let buffer = '';
-          let thinkingOpened = false;
 
           response.data.on('data', (chunk) => {
             buffer += chunk.toString();
@@ -193,85 +185,35 @@ app.post('/v1/chat/completions', async (req, res) => {
                 const rawData = trimmed.slice(6);
                 try {
                   const data = JSON.parse(rawData);
-                  const part = data.candidates?.[0]?.content?.parts?.[0];
+                  const textToSend = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
-                  if (part) {
-                    const text = part.text || "";
-                    const isThought = part.thought === true; // Deteksi chunk bagian berpikir dari Google
-                    let textToSend = "";
-
-                    if (isThought) {
-                      if (!thinkingOpened) {
-                        textToSend += '<think>\n';
-                        thinkingOpened = true;
-                      }
-                      textToSend += text;
-                    } else {
-                      if (thinkingOpened) {
-                        textToSend += '\n</think>\n\n';
-                        thinkingOpened = false;
-                      }
-                      textToSend += text;
-                    }
-
-                    if (textToSend) {
-                      const clientPayload = {
-                        id: `chatcmpl-${Date.now()}`,
-                        object: 'chat.completion.chunk',
-                        created: Math.floor(Date.now() / 1000),
-                        model: model,
-                        choices: [{
-                          index: 0,
-                          delta: { content: textToSend },
-                          finish_reason: null
-                        }]
-                      };
-                      res.write(`data: ${JSON.stringify(clientPayload)}\n\n`);
-                    }
+                  if (textToSend) {
+                    const clientPayload = {
+                      id: `chatcmpl-${Date.now()}`,
+                      object: 'chat.completion.chunk',
+                      created: Math.floor(Date.now() / 1000),
+                      model: model,
+                      choices: [{
+                        index: 0,
+                        delta: { content: textToSend },
+                        finish_reason: null
+                      }]
+                    };
+                    res.write(`data: ${JSON.stringify(clientPayload)}\n\n`);
                   }
                 } catch (e) {
-                  // Skip parsing metadata
+                  // Ignore parse errors on metadata or empty chunks
                 }
               }
             });
           });
 
           response.data.on('end', () => {
-            if (thinkingOpened) {
-              const closeThinkingPayload = {
-                id: `chatcmpl-${Date.now()}`,
-                object: 'chat.completion.chunk',
-                created: Math.floor(Date.now() / 1000),
-                model: model,
-                choices: [{
-                  index: 0,
-                  delta: { content: '\n</think>\n\n' },
-                  finish_reason: null
-                }]
-              };
-              res.write(`data: ${JSON.stringify(closeThinkingPayload)}\n\n`);
-            }
             res.write('data: [DONE]\n\n');
             res.end();
           });
         } else {
-          let fullText = '';
-          let thoughtsText = '';
-          
-          if (response.data.candidates?.[0]?.content?.parts) {
-            response.data.candidates[0].content.parts.forEach(part => {
-              if (part.thought === true && part.text) {
-                thoughtsText += part.text + '\n';
-              } else if (part.text) {
-                fullText += part.text;
-              }
-            });
-          }
-
-          if (thoughtsText.trim()) {
-            fullText = `<think>\n${thoughtsText.trim()}\n</think>\n\n` + fullText;
-          }
-
+          const textResponse = response.data.candidates?.[0]?.content?.parts?.[0]?.text || "";
           const openaiResponse = {
             id: `chatcmpl-${Date.now()}`,
             object: 'chat.completion',
@@ -281,7 +223,7 @@ app.post('/v1/chat/completions', async (req, res) => {
               index: 0,
               message: {
                 role: 'assistant',
-                content: fullText
+                content: textResponse
               },
               finish_reason: 'stop'
             }],
@@ -296,7 +238,7 @@ app.post('/v1/chat/completions', async (req, res) => {
         return;
       }
 
-      // --- PATHWAY B: Gemini Interactions API ---
+      // --- PATHWAY B: Gemini Interactions API (Uji Coba 2 di Colab) ---
       // Pembatasan: Tetap dipertahankan tanpa dijalankan/diuji ulang untuk menghemat kuota Anda.
       const formattedPrompt = messages.map(m => {
         const role = m.role === 'user' ? 'User' : 'Assistant';
@@ -395,7 +337,7 @@ app.post('/v1/chat/completions', async (req, res) => {
                   }
                 }
               } catch (e) {
-                // Skip parsing metadata
+                // Skip unparseable chunks
               }
             }
           });
