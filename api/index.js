@@ -154,7 +154,7 @@ app.post('/v1/chat/completions', async (req, res) => {
           contents: googleContents,
           generationConfig: {
             thinkingConfig: {
-              thinkingLevel: "high" // Selalu aktifkan level berpikir maksimal secara default
+              thinkingLevel: "high"
             }
           }
         };
@@ -195,7 +195,6 @@ app.post('/v1/chat/completions', async (req, res) => {
                   if (parts && Array.isArray(parts)) {
                     let textToSend = "";
                     
-                    // Iterasi seluruh parts dalam chunk agar tidak ada teks yang hilang
                     parts.forEach(part => {
                       const text = part.text || "";
                       const isThought = part.thought === true;
@@ -207,7 +206,6 @@ app.post('/v1/chat/completions', async (req, res) => {
                         }
                         textToSend += text;
                       } else {
-                        // Lazy-Closing: Hanya tutup blok pemikiran jika menerima teks jawaban asli (bukan spasi kosong)
                         if (thinkingOpened && text.trim().length > 0) {
                           textToSend += '\n</think>\n\n';
                           thinkingOpened = false;
