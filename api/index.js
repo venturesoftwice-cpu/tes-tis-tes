@@ -1,4 +1,4 @@
-// index.js - OpenAI to NVIDIA NIM & Google AI Studio API Proxy
+// index.js - OpenAI to NVIDIA NIM, OpenRouter & Mistral AI Proxy
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -12,12 +12,14 @@ app.use(express.urlencoded({ limit: '4.5mb', extended: true }));
 
 const NIM_API_BASE = process.env.NIM_API_BASE || 'https://integrate.api.nvidia.com/v1';
 const NIM_API_KEY = process.env.NIM_API_KEY;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+const MISTRAL_API_KEY = process.env.MISTRAL_API_KEY;
 
 const SHOW_REASONING = true; 
 const ENABLE_THINKING_MODE = true; 
 
 const MODEL_MAPPING = {
+  // Existing NVIDIA NIM Models
   'gpt-3.5-turbo': 'thinkingmachines/inkling',
   'gpt-4': 'qwen/qwen3-coder-480b-a35b-instruct',
   'gpt-4-turbo': 'google/gemma-4-31b-it',
@@ -25,24 +27,17 @@ const MODEL_MAPPING = {
   'claude-3-opus': 'z-ai/glm-5.2',
   'claude-3-sonnet': 'deepseek-ai/deepseek-v4-flash',
   'gemini-pro': 'google/diffusiongemma-26b-a4b-it',
-  
-  // Google AI Studio Models
-  'gemini-3-flash': 'gemini-3.6-flash',
-  'gemma-4-31b': 'gemma-4-31b-it',
-  'gemma-4-26b': 'gemma-4-26b-a4b-it',
-  
-  // NIM Model
-  'mistral-medium-3.5': 'mistralai/mistral-medium-3.5-128b'
-};
+  'mistral-medium-3.5': 'mistralai/mistral-medium-3.5-128b',
 
-// Standard safety configuration array setting all harm categories to BLOCK_NONE
-const BLOCK_NONE_SAFETY_SETTINGS = [
-  { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
-  { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
-  { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
-  { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
-  { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "BLOCK_NONE" }
-];
+  // OpenRouter Free Models
+  'gemma-4-31b': 'google/gemma-4-31b-it:free',
+  'gemma-4-26b': 'google/gemma-4-26b-a4b-it:free',
+  'gemini-3-flash': 'google/gemma-4-31b-it:free',
+
+  // Mistral AI Official Experimental Models
+  'mistral-large-2512': 'mistral-large-2512',
+  'mistral-medium-2508': 'mistral-medium-2508'
+};
 
 // Helper function to dynamically adjust parameters based on the specific NIM model
 function getModelConfig(nimModel, enableThinking) {
@@ -60,7 +55,7 @@ function getModelConfig(nimModel, enableThinking) {
     chatTemplateKwargs = enableThinking ? { thinking: true, reasoning_effort: "high" } : undefined;
   }
   else if (modelLower.includes('inkling')) {
-    maxTokens = 8192; // Inkling's max output token limit
+    maxTokens = 8192;
     chatTemplateKwargs = undefined; 
   }
   else if (modelLower.includes('glm-5.2')) {
@@ -71,10 +66,6 @@ function getModelConfig(nimModel, enableThinking) {
     maxTokens = 4096;
     chatTemplateKwargs = enableThinking ? { enable_thinking: true } : undefined;
   }
-  else if (modelLower.includes('mistral-medium-3.5')) {
-    maxTokens = 16384;
-    chatTemplateKwargs = undefined;
-  }
 
   return { maxTokens, chatTemplateKwargs };
 }
@@ -82,7 +73,7 @@ function getModelConfig(nimModel, enableThinking) {
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
-    service: 'OpenAI to NVIDIA NIM & Google AI Studio Proxy', 
+    service: 'OpenAI to NVIDIA NIM, OpenRouter & Mistral AI Proxy', 
     reasoning_display: SHOW_REASONING,
     thinking_mode: ENABLE_THINKING_MODE
   });
@@ -93,454 +84,125 @@ app.get('/v1/models', (req, res) => {
     id: model,
     object: 'model',
     created: Date.now(),
-    owned_by: 'nvidia-nim-proxy'
+    owned_by: 'multi-provider-proxy'
   }));
   res.json({ object: 'list', data: models });
 });
 
 app.post('/v1/chat/completions', async (req, res) => {
   try {
-    const { model, messages, temperature, max_tokens, stream, forbiddenWords } = req.body;
+    const { model, messages, temperature, max_tokens, stream, forbiddenWords, frequency_penalty } = req.body;
     
     // Auth fallback configurations
     const authHeader = req.headers.authorization;
     const clientApiKey = authHeader ? authHeader.replace('Bearer ', '').trim() : '';
-    const activeApiKey = NIM_API_KEY || clientApiKey;
 
-    let nimModel = MODEL_MAPPING[model];
-    if (!nimModel) {
-      try {
-        await axios.post(`${NIM_API_BASE}/chat/completions`, {
-          model: model,
-          messages: [{ role: 'user', content: 'test' }],
-          max_tokens: 1
-        }, {
-          headers: { 'Authorization': `Bearer ${activeApiKey}`, 'Content-Type': 'application/json' },
-          validateStatus: (status) => status < 500
-        }).then(res => {
-          if (res.status >= 200 && res.status < 300) {
-            nimModel = model;
-          }
-        });
-      } catch (e) {}
-      
-      if (!nimModel) {
-        nimModel = 'deepseek-ai/deepseek-v4-pro';
-      }
-    }
+    let targetModel = MODEL_MAPPING[model] || model;
 
-    // Build Negative Constraint string if forbiddenWords are supplied
+    // Construct dynamic Negative Constraint Directive if forbiddenWords are supplied
     let negativeConstraint = "";
     if (forbiddenWords && typeof forbiddenWords === 'string' && forbiddenWords.trim().length > 0) {
       negativeConstraint = `\n\n[CRITICAL NEGATIVE CONSTRAINTS: You are strictly forbidden from outputting or using any of the following words, phrases, AI clichés, or behaviors: ${forbiddenWords.trim()}. Choose natural, creative alternatives and adhere strictly to these exclusions.]`;
     }
 
-    // Determine destination pathway
-    const isAIStudio = nimModel && (nimModel.startsWith('gemini-') || nimModel.startsWith('gemma-4'));
-
-    // --- Google AI Studio Pathway ---
-    if (isAIStudio) {
-      if (!GEMINI_API_KEY) {
-        return res.status(401).json({
-          error: { 
-            message: 'API Key Gemini / Google AI Studio kosong. Silakan atur GEMINI_API_KEY di dashboard lingkungan Vercel Anda.', 
-            type: 'invalid_request_error', 
-            code: 401 
-          }
-        });
-      }
-
-      const isGemmaModel = nimModel.startsWith('gemma-4');
-
-      // --- PATHWAY A: Gemma Standard Generation ---
-      if (isGemmaModel) {
-        const systemMessage = messages.find(m => m.role === 'system');
-        let systemInstructionText = systemMessage ? systemMessage.content : '';
-
-        if (negativeConstraint) {
-          systemInstructionText += negativeConstraint;
-        }
-
-        const googleContents = messages.map(m => {
-          if (m.role === 'system') return null;
-          return {
-            role: m.role === 'assistant' ? 'model' : 'user',
-            parts: [{ text: m.content }]
-          };
-        }).filter(Boolean);
-
-        const googleUrl = `https://generativelanguage.googleapis.com/v1beta/models/${nimModel}:${stream ? 'streamGenerateContent' : 'generateContent'}?key=${GEMINI_API_KEY}${stream ? '&alt=sse' : ''}`;
-
-        const payload = {
-          contents: googleContents,
-          generationConfig: {
-            thinkingConfig: {
-              thinkingLevel: "high"
-            }
-          },
-          safetySettings: BLOCK_NONE_SAFETY_SETTINGS // Injected BLOCK_NONE safety settings
-        };
-
-        if (systemInstructionText) {
-          payload.systemInstruction = {
-            parts: [{ text: systemInstructionText.trim() }]
-          };
-        }
-
-        const response = await axios.post(googleUrl, payload, {
-          responseType: stream ? 'stream' : 'json'
-        });
-
-        if (stream) {
-          res.setHeader('Content-Type', 'text/event-stream');
-          res.setHeader('Cache-Control', 'no-cache');
-          res.setHeader('Connection', 'keep-alive');
-
-          let buffer = '';
-          let thinkingOpened = false;
-
-          response.data.on('data', (chunk) => {
-            buffer += chunk.toString();
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              const trimmed = line.trim();
-              if (!trimmed) return;
-
-              if (trimmed.startsWith('data: ')) {
-                const rawData = trimmed.slice(6);
-                try {
-                  const data = JSON.parse(rawData);
-                  const parts = data.candidates?.[0]?.content?.parts;
-
-                  if (parts && Array.isArray(parts)) {
-                    let textToSend = "";
-                    
-                    parts.forEach(part => {
-                      const text = part.text || "";
-                      const isThought = part.thought === true;
-
-                      if (isThought) {
-                        if (!thinkingOpened) {
-                          textToSend += '<think>\n';
-                          thinkingOpened = true;
-                        }
-                        textToSend += text;
-                      } else {
-                        if (thinkingOpened && text.trim().length > 0) {
-                          textToSend += '\n</think>\n\n';
-                          thinkingOpened = false;
-                        }
-                        textToSend += text;
-                      }
-                    });
-
-                    if (textToSend) {
-                      const clientPayload = {
-                        id: `chatcmpl-${Date.now()}`,
-                        object: 'chat.completion.chunk',
-                        created: Math.floor(Date.now() / 1000),
-                        model: model,
-                        choices: [{
-                          index: 0,
-                          delta: { content: textToSend },
-                          finish_reason: null
-                        }]
-                      };
-                      res.write(`data: ${JSON.stringify(clientPayload)}\n\n`);
-                    }
-                  }
-                } catch (e) {
-                  // Skip parsing metadata
-                }
-              }
-            });
-          });
-
-          response.data.on('end', () => {
-            if (thinkingOpened) {
-              const closeThinkingPayload = {
-                id: `chatcmpl-${Date.now()}`,
-                object: 'chat.completion.chunk',
-                created: Math.floor(Date.now() / 1000),
-                model: model,
-                choices: [{
-                  index: 0,
-                  delta: { content: '\n</think>\n\n' },
-                  finish_reason: null
-                }]
-              };
-              res.write(`data: ${JSON.stringify(closeThinkingPayload)}\n\n`);
-            }
-            res.write('data: [DONE]\n\n');
-            res.end();
-          });
-        } else {
-          let fullText = '';
-          let thoughtsText = '';
-          
-          if (response.data.candidates?.[0]?.content?.parts) {
-            response.data.candidates[0].content.parts.forEach(part => {
-              if (part.thought === true && part.text) {
-                thoughtsText += part.text;
-              } else if (part.text) {
-                fullText += part.text;
-              }
-            });
-          }
-
-          if (thoughtsText.trim()) {
-            fullText = `<think>\n${thoughtsText.trim()}\n</think>\n\n` + fullText;
-          }
-
-          const openaiResponse = {
-            id: `chatcmpl-${Date.now()}`,
-            object: 'chat.completion',
-            created: Math.floor(Date.now() / 1000),
-            model: model,
-            choices: [{
-              index: 0,
-              message: {
-                role: 'assistant',
-                content: fullText
-              },
-              finish_reason: 'stop'
-            }],
-            usage: {
-              prompt_tokens: 0,
-              completion_tokens: 0,
-              total_tokens: 0
-            }
-          };
-          res.json(openaiResponse);
-        }
-        return;
-      }
-
-      // --- PATHWAY B: Gemini Interactions API ---
-      let formattedPrompt = messages.map(m => {
-        const role = m.role === 'user' ? 'User' : 'Assistant';
-        return `${role}: ${m.content}`;
-      }).join('\n\n');
-
-      if (negativeConstraint) {
-        formattedPrompt += negativeConstraint;
-      }
-
-      const isBetaModel = nimModel.includes('preview') || nimModel.includes('3.6');
-      const apiPath = isBetaModel ? 'v1beta' : 'v1';
-      const googleUrl = `https://generativelanguage.googleapis.com/${apiPath}/interactions?key=${GEMINI_API_KEY}`;
-
-      const response = await axios.post(
-        googleUrl,
-        {
-          model: nimModel,
-          input: formattedPrompt,
-          generation_config: {
-            thinking_summaries: "auto",
-            thinking_level: "high"
-          },
-          safety_settings: BLOCK_NONE_SAFETY_SETTINGS, // Injected BLOCK_NONE safety settings
-          stream: stream || false
-        },
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            'Api-Revision': '2026-05-20'
-          },
-          responseType: stream ? 'stream' : 'json'
-        }
-      );
-
-      if (stream) {
-        res.setHeader('Content-Type', 'text/event-stream');
-        res.setHeader('Cache-Control', 'no-cache');
-        res.setHeader('Connection', 'keep-alive');
-
-        let buffer = '';
-        let currentEvent = '';
-        let thinkingOpened = false;
-
-        response.data.on('data', (chunk) => {
-          buffer += chunk.toString();
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-
-          lines.forEach(line => {
-            const trimmed = line.trim();
-            if (!trimmed) return;
-
-            if (trimmed.startsWith('event: ')) {
-              currentEvent = trimmed.slice(7);
-            } else if (trimmed.startsWith('data: ')) {
-              const rawData = trimmed.slice(6);
-              if (rawData === '[DONE]') {
-                res.write('data: [DONE]\n\n');
-                return;
-              }
-
-              try {
-                const data = JSON.parse(rawData);
-                if (currentEvent === 'step.delta' || data.event_type === 'step.delta') {
-                  const delta = data.delta;
-                  if (delta) {
-                    let textToSend = '';
-
-                    // Intercept thought chunks
-                    if (delta.type === 'thought_summary' && delta.content?.text) {
-                      if (!thinkingOpened) {
-                        textToSend += '<think>\n';
-                        thinkingOpened = true;
-                      }
-                      textToSend += delta.content.text;
-                    } 
-                    // Intercept response text chunks
-                    else if (delta.type === 'text' && delta.text) {
-                      if (thinkingOpened) {
-                        textToSend += '\n</think>\n\n';
-                        thinkingOpened = false;
-                      }
-                      textToSend += delta.text;
-                    }
-
-                    if (textToSend) {
-                      const clientPayload = {
-                        id: `chatcmpl-${Date.now()}`,
-                        object: 'chat.completion.chunk',
-                        created: Math.floor(Date.now() / 1000),
-                        model: model,
-                        choices: [{
-                          index: 0,
-                          delta: { content: textToSend },
-                          finish_reason: null
-                        }]
-                      };
-                      res.write(`data: ${JSON.stringify(clientPayload)}\n\n`);
-                    }
-                  }
-                }
-              } catch (e) {
-                // Skip parsing metadata
-              }
-            }
-          });
-        });
-
-        response.data.on('end', () => {
-          if (thinkingOpened) {
-            const closeThinkingPayload = {
-              id: `chatcmpl-${Date.now()}`,
-              object: 'chat.completion.chunk',
-              created: Math.floor(Date.now() / 1000),
-              model: model,
-              choices: [{
-                index: 0,
-                delta: { content: '\n</think>\n\n' },
-                finish_reason: null
-              }]
-            };
-            res.write(`data: ${JSON.stringify(closeThinkingPayload)}\n\n`);
-          }
-          res.write('data: [DONE]\n\n');
-          res.end();
-        });
-      } else {
-        let fullText = '';
-        let thoughtsText = '';
-        
-        if (response.data.steps && Array.isArray(response.data.steps)) {
-          response.data.steps.forEach(step => {
-            if (step.type === 'thought' && step.summary) {
-              step.summary.forEach(block => {
-                if (block.type === 'text' && block.text) {
-                  thoughtsText += block.text + '\n';
-                }
-              });
-            } else if (step.type === 'model_output' && step.content) {
-              step.content.forEach(block => {
-                if (block.type === 'text' && block.text) {
-                  fullText += block.text;
-                }
-              });
-            }
-          });
-        }
-
-        if (thoughtsText.trim()) {
-          fullText = `<think>\n${thoughtsText.trim()}\n</think>\n\n` + fullText;
-        }
-
-        const openaiResponse = {
-          id: `chatcmpl-${Date.now()}`,
-          object: 'chat.completion',
-          created: Math.floor(Date.now() / 1000),
-          model: model,
-          choices: [{
-            index: 0,
-            message: {
-              role: 'assistant',
-              content: fullText
-            },
-            finish_reason: 'stop'
-          }],
-          usage: {
-            prompt_tokens: 0,
-            completion_tokens: 0,
-            total_tokens: 0
-          }
-        };
-        res.json(openaiResponse);
-      }
-      return;
-    }
-
-    // --- NVIDIA NIM Pathway ---
-    if (!activeApiKey || activeApiKey === 'dummy-key') {
-      return res.status(401).json({
-        error: { 
-          message: 'API Key NVIDIA kosong. Silakan tempelkan API Key NVIDIA (nvapi-...) Anda di kolom API Key Janitor AI.', 
-          type: 'invalid_request_error', 
-          code: 401 
-        }
-      });
-    }
-
-    const config = getModelConfig(nimModel, ENABLE_THINKING_MODE);
-
-    // Deep clone messages array to prevent mutation
-    let nimMessages = JSON.parse(JSON.stringify(messages));
-
+    // Process system prompt with negative constraints
+    let processedMessages = JSON.parse(JSON.stringify(messages));
     if (negativeConstraint) {
-      const sysMsgIndex = nimMessages.findIndex(m => m.role === 'system');
+      const sysMsgIndex = processedMessages.findIndex(m => m.role === 'system');
       if (sysMsgIndex !== -1) {
-        nimMessages[sysMsgIndex].content += negativeConstraint;
+        processedMessages[sysMsgIndex].content += negativeConstraint;
       } else {
-        nimMessages.unshift({ role: 'system', content: negativeConstraint.trim() });
+        processedMessages.unshift({ role: 'system', content: negativeConstraint.trim() });
       }
     }
 
-    const nimRequest = {
-      model: nimModel,
-      messages: nimMessages,
-      temperature: temperature !== undefined ? temperature : 0.7,
-      max_tokens: max_tokens ? Math.min(max_tokens, config.maxTokens) : config.maxTokens,
-      chat_template_kwargs: config.chatTemplateKwargs,
-      stream: stream || false
-    };
+    // Determine Provider Routing
+    const isMistralAPI = targetModel.startsWith('mistral-large-2512') || targetModel.startsWith('mistral-medium-2508');
+    const isOpenRouterAPI = targetModel.includes(':free') || targetModel.startsWith('google/');
 
-    if (nimModel.toLowerCase().includes('mistral-medium-3.5')) {
-      nimRequest.reasoning_effort = "high";
+    let requestUrl = `${NIM_API_BASE}/chat/completions`;
+    let requestHeaders = {
+      'Authorization': `Bearer ${NIM_API_KEY || clientApiKey}`,
+      'Content-Type': 'application/json'
+    };
+    let requestPayload = {};
+
+    // --- 1. Mistral AI Official API Route ---
+    if (isMistralAPI) {
+      if (!MISTRAL_API_KEY) {
+        return res.status(401).json({
+          error: { message: 'MISTRAL_API_KEY is missing in Vercel environment variables.', type: 'invalid_request_error', code: 401 }
+        });
+      }
+      requestUrl = 'https://api.mistral.ai/v1/chat/completions';
+      requestHeaders['Authorization'] = `Bearer ${MISTRAL_API_KEY}`;
+
+      requestPayload = {
+        model: targetModel,
+        messages: processedMessages,
+        temperature: temperature !== undefined ? temperature : 0.7,
+        max_tokens: max_tokens || 16384,
+        frequency_penalty: frequency_penalty !== undefined ? frequency_penalty : 0.3,
+        reasoning_effort: "xhigh", // Custom reasoning level requested for Mistral
+        prompt_mode: "reasoning",  // Custom prompt mode argument
+        stream: stream || false
+      };
     }
-    
-    const response = await axios.post(`${NIM_API_BASE}/chat/completions`, nimRequest, {
-      headers: {
-        'Authorization': `Bearer ${activeApiKey}`,
+    // --- 2. OpenRouter API Route ---
+    else if (isOpenRouterAPI) {
+      if (!OPENROUTER_API_KEY) {
+        return res.status(401).json({
+          error: { message: 'OPENROUTER_API_KEY is missing in Vercel environment variables.', type: 'invalid_request_error', code: 401 }
+        });
+      }
+      requestUrl = 'https://openrouter.ai/api/v1/chat/completions';
+      requestHeaders = {
+        'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+        'HTTP-Referer': 'https://tes-tis-tes.vercel.app',
+        'X-Title': 'Private Chatbot Client',
         'Content-Type': 'application/json'
-      },
+      };
+
+      requestPayload = {
+        model: targetModel,
+        messages: processedMessages,
+        temperature: temperature !== undefined ? temperature : 0.7,
+        max_tokens: max_tokens || 16384,
+        include_reasoning: true, // Enables OpenRouter reasoning deltas
+        stream: stream || false
+      };
+    }
+    // --- 3. NVIDIA NIM API Route (Default) ---
+    else {
+      const activeApiKey = NIM_API_KEY || clientApiKey;
+      if (!activeApiKey || activeApiKey === 'dummy-key') {
+        return res.status(401).json({
+          error: { message: 'NVIDIA API Key is missing.', type: 'invalid_request_error', code: 401 }
+        });
+      }
+
+      const config = getModelConfig(targetModel, ENABLE_THINKING_MODE);
+      requestPayload = {
+        model: targetModel,
+        messages: processedMessages,
+        temperature: temperature !== undefined ? temperature : 0.7,
+        max_tokens: max_tokens ? Math.min(max_tokens, config.maxTokens) : config.maxTokens,
+        chat_template_kwargs: config.chatTemplateKwargs,
+        stream: stream || false
+      };
+
+      if (targetModel.toLowerCase().includes('mistral-medium-3.5')) {
+        requestPayload.reasoning_effort = "high";
+      }
+    }
+
+    // Execute Request across selected Provider
+    const response = await axios.post(requestUrl, requestPayload, {
+      headers: requestHeaders,
       responseType: stream ? 'stream' : 'json'
     });
     
+    // --- Streaming Handler (Unified across NIM, OpenRouter & Mistral) ---
     if (stream) {
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
@@ -578,7 +240,7 @@ app.post('/v1/chat/completions', async (req, res) => {
                   }
                   
                   if (content && reasoningStarted) {
-                    combinedContent += '</think>\n\n' + content;
+                    combinedContent += '\n</think>\n\n' + content;
                     reasoningStarted = false;
                   } else if (content) {
                     combinedContent += content;
@@ -608,9 +270,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       });
       
       response.data.on('end', () => res.end());
-      response.data.on('error', (err) => {
-        res.end();
-      });
+      response.data.on('error', (err) => res.end());
     } else {
       const openaiResponse = {
         id: `chatcmpl-${Date.now()}`,
@@ -634,11 +294,7 @@ app.post('/v1/chat/completions', async (req, res) => {
             finish_reason: choice.finish_reason
           };
         }),
-        usage: response.data.usage || {
-          prompt_tokens: 0,
-          completion_tokens: 0,
-          total_tokens: 0
-        }
+        usage: response.data.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
       };
       res.json(openaiResponse);
     }
