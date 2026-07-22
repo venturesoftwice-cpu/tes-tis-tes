@@ -103,7 +103,19 @@ app.post('/v1/chat/completions', async (req, res) => {
       negativeConstraint = `\n\n[CRITICAL NEGATIVE CONSTRAINTS: You are strictly forbidden from outputting or using any of the following words, phrases, AI clichés, or behaviors: ${forbiddenWords.trim()}. Choose natural, creative alternatives and adhere strictly to these exclusions.]`;
     }
 
-    let processedMessages = JSON.parse(JSON.stringify(messages));
+    // 1. Dapatkan pesan mentah
+    let rawMessages = JSON.parse(JSON.stringify(messages));
+
+    // 2. OPTIMASI KONTEKS: Bersihkan tag <think>...</think> dari riwayat jawaban asisten terdahulu
+    let processedMessages = rawMessages.map(m => {
+      if (m.role === 'assistant' && typeof m.content === 'string') {
+        const cleanContent = m.content.replace(/<think>([\s\S]*?)(?:<\/think>|$)/gi, '').trim();
+        return { role: m.role, content: cleanContent };
+      }
+      return m;
+    });
+
+    // 3. Sisipkan Negative Constraint ke System Prompt
     if (negativeConstraint) {
       const sysMsgIndex = processedMessages.findIndex(m => m.role === 'system');
       if (sysMsgIndex !== -1) {
@@ -139,13 +151,17 @@ app.post('/v1/chat/completions', async (req, res) => {
         messages: processedMessages,
         temperature: temperature !== undefined ? temperature : 0.7,
         max_tokens: max_tokens || 16384,
-        frequency_penalty: frequency_penalty !== undefined ? frequency_penalty : 0.3,
         stream: stream || false
       };
 
-      // Only attach reasoning_effort to models that support it (e.g. mistral-medium-3-5)
+      // Hanya aktifkan reasoning_effort jika model mendukungnya (Medium)
+      // Dilarang mengirim frequency_penalty pada reasoning mode agar tidak terjadi repetition loop
       if (targetModel.includes('medium')) {
         requestPayload.reasoning_effort = "high";
+      } else {
+        if (frequency_penalty !== undefined) {
+          requestPayload.frequency_penalty = frequency_penalty;
+        }
       }
     }
     // --- 2. OpenRouter API Route ---
@@ -168,7 +184,7 @@ app.post('/v1/chat/completions', async (req, res) => {
         messages: processedMessages,
         temperature: temperature !== undefined ? temperature : 0.7,
         max_tokens: max_tokens || 16384,
-        reasoning: { effort: "high" }, // Valid reasoning parameter without max_tokens conflict
+        reasoning: { effort: "high" },
         include_reasoning: true,
         stream: stream || false
       };
