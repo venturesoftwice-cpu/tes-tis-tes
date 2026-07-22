@@ -6,7 +6,7 @@ const axios = require('axios');
 const app = express();
 
 app.use(cors());
-// Set incoming payload size limit to 4.5 MB to allow up to 1M token context windows
+// Set incoming payload size limit to 4.5 MB to support up to 1M token contexts
 app.use(express.json({ limit: '4.5mb' }));
 app.use(express.urlencoded({ limit: '4.5mb', extended: true }));
 
@@ -34,6 +34,15 @@ const MODEL_MAPPING = {
   // NIM Model
   'mistral-medium-3.5': 'mistralai/mistral-medium-3.5-128b'
 };
+
+// Standard safety configuration array setting all harm categories to BLOCK_NONE
+const BLOCK_NONE_SAFETY_SETTINGS = [
+  { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+  { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+  { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+  { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
+  { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "BLOCK_NONE" }
+];
 
 // Helper function to dynamically adjust parameters based on the specific NIM model
 function getModelConfig(nimModel, enableThinking) {
@@ -73,7 +82,7 @@ function getModelConfig(nimModel, enableThinking) {
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
-    service: 'OpenAI to NVIDIA NIM Proxy', 
+    service: 'OpenAI to NVIDIA NIM & Google AI Studio Proxy', 
     reasoning_display: SHOW_REASONING,
     thinking_mode: ENABLE_THINKING_MODE
   });
@@ -91,7 +100,7 @@ app.get('/v1/models', (req, res) => {
 
 app.post('/v1/chat/completions', async (req, res) => {
   try {
-    const { model, messages, temperature, max_tokens, stream } = req.body;
+    const { model, messages, temperature, max_tokens, stream, forbiddenWords } = req.body;
     
     // Auth fallback configurations
     const authHeader = req.headers.authorization;
@@ -120,6 +129,12 @@ app.post('/v1/chat/completions', async (req, res) => {
       }
     }
 
+    // Build Negative Constraint string if forbiddenWords are supplied
+    let negativeConstraint = "";
+    if (forbiddenWords && typeof forbiddenWords === 'string' && forbiddenWords.trim().length > 0) {
+      negativeConstraint = `\n\n[CRITICAL NEGATIVE CONSTRAINTS: You are strictly forbidden from outputting or using any of the following words, phrases, AI clichés, or behaviors: ${forbiddenWords.trim()}. Choose natural, creative alternatives and adhere strictly to these exclusions.]`;
+    }
+
     // Determine destination pathway
     const isAIStudio = nimModel && (nimModel.startsWith('gemini-') || nimModel.startsWith('gemma-4'));
 
@@ -140,7 +155,11 @@ app.post('/v1/chat/completions', async (req, res) => {
       // --- PATHWAY A: Gemma Standard Generation ---
       if (isGemmaModel) {
         const systemMessage = messages.find(m => m.role === 'system');
-        const systemInstructionText = systemMessage ? systemMessage.content : '';
+        let systemInstructionText = systemMessage ? systemMessage.content : '';
+
+        if (negativeConstraint) {
+          systemInstructionText += negativeConstraint;
+        }
 
         const googleContents = messages.map(m => {
           if (m.role === 'system') return null;
@@ -158,12 +177,13 @@ app.post('/v1/chat/completions', async (req, res) => {
             thinkingConfig: {
               thinkingLevel: "high"
             }
-          }
+          },
+          safetySettings: BLOCK_NONE_SAFETY_SETTINGS // Injected BLOCK_NONE safety settings
         };
 
         if (systemInstructionText) {
           payload.systemInstruction = {
-            parts: [{ text: systemInstructionText }]
+            parts: [{ text: systemInstructionText.trim() }]
           };
         }
 
@@ -299,10 +319,14 @@ app.post('/v1/chat/completions', async (req, res) => {
       }
 
       // --- PATHWAY B: Gemini Interactions API ---
-      const formattedPrompt = messages.map(m => {
+      let formattedPrompt = messages.map(m => {
         const role = m.role === 'user' ? 'User' : 'Assistant';
         return `${role}: ${m.content}`;
       }).join('\n\n');
+
+      if (negativeConstraint) {
+        formattedPrompt += negativeConstraint;
+      }
 
       const isBetaModel = nimModel.includes('preview') || nimModel.includes('3.6');
       const apiPath = isBetaModel ? 'v1beta' : 'v1';
@@ -317,6 +341,7 @@ app.post('/v1/chat/completions', async (req, res) => {
             thinking_summaries: "auto",
             thinking_level: "high"
           },
+          safety_settings: BLOCK_NONE_SAFETY_SETTINGS, // Injected BLOCK_NONE safety settings
           stream: stream || false
         },
         {
@@ -483,9 +508,21 @@ app.post('/v1/chat/completions', async (req, res) => {
 
     const config = getModelConfig(nimModel, ENABLE_THINKING_MODE);
 
+    // Deep clone messages array to prevent mutation
+    let nimMessages = JSON.parse(JSON.stringify(messages));
+
+    if (negativeConstraint) {
+      const sysMsgIndex = nimMessages.findIndex(m => m.role === 'system');
+      if (sysMsgIndex !== -1) {
+        nimMessages[sysMsgIndex].content += negativeConstraint;
+      } else {
+        nimMessages.unshift({ role: 'system', content: negativeConstraint.trim() });
+      }
+    }
+
     const nimRequest = {
       model: nimModel,
-      messages: messages,
+      messages: nimMessages,
       temperature: temperature !== undefined ? temperature : 0.7,
       max_tokens: max_tokens ? Math.min(max_tokens, config.maxTokens) : config.maxTokens,
       chat_template_kwargs: config.chatTemplateKwargs,
