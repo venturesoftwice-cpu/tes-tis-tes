@@ -97,12 +97,6 @@ app.post('/v1/chat/completions', async (req, res) => {
 
     let targetModel = MODEL_MAPPING[model] || model;
 
-    // Construct dynamic Negative Constraint Directive if forbiddenWords are supplied
-    let negativeConstraint = "";
-    if (forbiddenWords && typeof forbiddenWords === 'string' && forbiddenWords.trim().length > 0) {
-      negativeConstraint = `\n\n[CRITICAL NEGATIVE CONSTRAINTS: You are strictly forbidden from outputting or using any of the following words, phrases, AI clichés, or behaviors: ${forbiddenWords.trim()}. Choose natural, creative alternatives and adhere strictly to these exclusions.]`;
-    }
-
     // 1. Dapatkan pesan mentah
     let rawMessages = JSON.parse(JSON.stringify(messages));
 
@@ -115,13 +109,26 @@ app.post('/v1/chat/completions', async (req, res) => {
       return m;
     });
 
-    // 3. Sisipkan Negative Constraint ke System Prompt
-    if (negativeConstraint) {
+    // 3. Construct dynamic Negative Constraint Directive jika forbiddenWords diisi
+    let negativeConstraint = "";
+    if (forbiddenWords && typeof forbiddenWords === 'string' && forbiddenWords.trim().length > 0) {
+      negativeConstraint = `\n\n[CRITICAL NEGATIVE CONSTRAINTS: You are strictly forbidden from outputting or using any of the following words, phrases, AI clichés, or behaviors: ${forbiddenWords.trim()}. Choose natural, creative alternatives and adhere strictly to these exclusions.]`;
+    }
+
+    // 4. Prompt-Forced Thinking untuk Mistral Large (memaksa pemikiran analitis sebelum menjawab)
+    let forcedThinkingDirective = "";
+    if (targetModel === 'mistral-large-latest') {
+      forcedThinkingDirective = `\n\n[REASONING DIRECTIVE: Before providing your final answer, write out your detailed step-by-step thinking process inside <think>...</think> tags.]`;
+    }
+
+    // Gabungkan instruksi tambahan ke System Prompt
+    const extraSystemInstructions = negativeConstraint + forcedThinkingDirective;
+    if (extraSystemInstructions.trim()) {
       const sysMsgIndex = processedMessages.findIndex(m => m.role === 'system');
       if (sysMsgIndex !== -1) {
-        processedMessages[sysMsgIndex].content += negativeConstraint;
+        processedMessages[sysMsgIndex].content += extraSystemInstructions;
       } else {
-        processedMessages.unshift({ role: 'system', content: negativeConstraint.trim() });
+        processedMessages.unshift({ role: 'system', content: extraSystemInstructions.trim() });
       }
     }
 
@@ -184,7 +191,7 @@ app.post('/v1/chat/completions', async (req, res) => {
         messages: processedMessages,
         temperature: temperature !== undefined ? temperature : 0.7,
         max_tokens: max_tokens || 16384,
-        reasoning: { effort: "high" },
+        reasoning: { effort: "high" }, // Format reasoning OpenRouter yang valid
         include_reasoning: true,
         stream: stream || false
       };
