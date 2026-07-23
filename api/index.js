@@ -29,6 +29,10 @@ const MODEL_MAPPING = {
   'gemini-pro': 'google/diffusiongemma-26b-a4b-it',
   'mistral-medium-3.5': 'mistralai/mistral-medium-3.5-128b',
 
+  // MiniMax NVIDIA NIM Models
+  'minimax-m3': 'minimaxai/minimax-m3',
+  'minimax-m2.7': 'minimaxai/minimax-m2.7',
+
   // OpenRouter Free Gemma Models
   'gemma-4-31b': 'google/gemma-4-31b-it:free',
   'gemma-4-26b': 'google/gemma-4-26b-a4b-it:free',
@@ -45,7 +49,15 @@ function getModelConfig(nimModel, enableThinking) {
 
   const modelLower = nimModel.toLowerCase();
 
-  if (modelLower.includes('gemma-4')) {
+  if (modelLower.includes('minimax-m3') || modelLower.includes('minimax-3')) {
+    maxTokens = 8192;
+    chatTemplateKwargs = enableThinking ? { thinking_mode: "enabled" } : { thinking_mode: "disabled" };
+  }
+  else if (modelLower.includes('minimax-m2.7') || modelLower.includes('minimax-2.7')) {
+    maxTokens = 8192;
+    chatTemplateKwargs = undefined;
+  }
+  else if (modelLower.includes('gemma-4')) {
     maxTokens = 16384;
     chatTemplateKwargs = enableThinking ? { enable_thinking: true } : undefined;
   } 
@@ -161,8 +173,6 @@ app.post('/v1/chat/completions', async (req, res) => {
         stream: stream || false
       };
 
-      // Hanya aktifkan reasoning_effort jika model mendukungnya (Medium)
-      // Dilarang mengirim frequency_penalty pada reasoning mode agar tidak terjadi repetition loop
       if (targetModel.includes('medium')) {
         requestPayload.reasoning_effort = "high";
       } else {
@@ -191,7 +201,7 @@ app.post('/v1/chat/completions', async (req, res) => {
         messages: processedMessages,
         temperature: temperature !== undefined ? temperature : 0.7,
         max_tokens: max_tokens || 16384,
-        reasoning: { effort: "high" }, // Format reasoning OpenRouter yang valid
+        reasoning: { effort: "high" },
         include_reasoning: true,
         stream: stream || false
       };
@@ -211,9 +221,12 @@ app.post('/v1/chat/completions', async (req, res) => {
         messages: processedMessages,
         temperature: temperature !== undefined ? temperature : 0.7,
         max_tokens: max_tokens ? Math.min(max_tokens, config.maxTokens) : config.maxTokens,
-        chat_template_kwargs: config.chatTemplateKwargs,
         stream: stream || false
       };
+
+      if (config.chatTemplateKwargs) {
+        requestPayload.chat_template_kwargs = config.chatTemplateKwargs;
+      }
 
       if (targetModel.toLowerCase().includes('mistral-medium-3.5')) {
         requestPayload.reasoning_effort = "high";
