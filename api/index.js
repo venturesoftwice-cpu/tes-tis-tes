@@ -15,9 +15,6 @@ const NIM_API_KEY = process.env.NIM_API_KEY;
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const MISTRAL_API_KEY = process.env.MISTRAL_API_KEY;
 
-const SHOW_REASONING = true; 
-const ENABLE_THINKING_MODE = true; 
-
 const MODEL_MAPPING = {
   // NVIDIA NIM Models
   'gpt-3.5-turbo': 'thinkingmachines/inkling',
@@ -59,11 +56,11 @@ function getModelConfig(nimModel, enableThinking) {
   }
   else if (modelLower.includes('gemma-4')) {
     maxTokens = 16384;
-    chatTemplateKwargs = enableThinking ? { enable_thinking: true } : undefined;
+    chatTemplateKwargs = enableThinking ? { enable_thinking: true } : { enable_thinking: false };
   } 
   else if (modelLower.includes('deepseek-v4') || modelLower.includes('deepseek')) {
     maxTokens = 16384;
-    chatTemplateKwargs = enableThinking ? { thinking: true, reasoning_effort: "high" } : undefined;
+    chatTemplateKwargs = enableThinking ? { thinking: true, reasoning_effort: "high" } : { thinking: false };
   }
   else if (modelLower.includes('inkling')) {
     maxTokens = 8192;
@@ -71,11 +68,11 @@ function getModelConfig(nimModel, enableThinking) {
   }
   else if (modelLower.includes('glm-5.2')) {
     maxTokens = 16384;
-    chatTemplateKwargs = enableThinking ? { thinking: { type: "enabled" }, reasoning_effort: "high" } : undefined;
+    chatTemplateKwargs = enableThinking ? { thinking: { type: "enabled" }, reasoning_effort: "high" } : { thinking: { type: "disabled" } };
   }
   else if (modelLower.includes('diffusiongemma') || modelLower.includes('gemma-26b')) {
     maxTokens = 4096;
-    chatTemplateKwargs = enableThinking ? { enable_thinking: true } : undefined;
+    chatTemplateKwargs = enableThinking ? { enable_thinking: true } : { enable_thinking: false };
   }
 
   return { maxTokens, chatTemplateKwargs };
@@ -84,9 +81,8 @@ function getModelConfig(nimModel, enableThinking) {
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
-    service: 'OpenAI to NVIDIA NIM, OpenRouter & Mistral AI Proxy', 
-    reasoning_display: SHOW_REASONING,
-    thinking_mode: ENABLE_THINKING_MODE
+    service: 'OpenAI to NVIDIA NIM, OpenRouter & Mistral AI Proxy',
+    dynamic_thinking: true
   });
 });
 
@@ -102,8 +98,11 @@ app.get('/v1/models', (req, res) => {
 
 app.post('/v1/chat/completions', async (req, res) => {
   try {
-    const { model, messages, temperature, max_tokens, stream, forbiddenWords, frequency_penalty } = req.body;
+    const { model, messages, temperature, max_tokens, stream, forbiddenWords, frequency_penalty, enableThinking } = req.body;
     
+    // Baca parameter enableThinking dari UI Client (Default: true)
+    const isThinkingEnabled = enableThinking !== undefined ? Boolean(enableThinking) : true;
+
     const authHeader = req.headers.authorization;
     const clientApiKey = authHeader ? authHeader.replace('Bearer ', '').trim() : '';
 
@@ -127,9 +126,9 @@ app.post('/v1/chat/completions', async (req, res) => {
       negativeConstraint = `\n\n[CRITICAL NEGATIVE CONSTRAINTS: You are strictly forbidden from outputting or using any of the following words, phrases, AI clichés, or behaviors: ${forbiddenWords.trim()}. Choose natural, creative alternatives and adhere strictly to these exclusions.]`;
     }
 
-    // 4. Prompt-Forced Thinking untuk Mistral Large (memaksa pemikiran analitis sebelum menjawab)
+    // 4. Prompt-Forced Thinking untuk Mistral Large (HANYA DITAMBAHKAN JIKA THINKING MODE AKTIF)
     let forcedThinkingDirective = "";
-    if (targetModel === 'mistral-large-latest') {
+    if (targetModel === 'mistral-large-latest' && isThinkingEnabled) {
       forcedThinkingDirective = `\n\n[REASONING DIRECTIVE: Before providing your final answer, write out your detailed step-by-step thinking process inside <think>...</think> tags.]`;
     }
 
@@ -173,7 +172,7 @@ app.post('/v1/chat/completions', async (req, res) => {
         stream: stream || false
       };
 
-      if (targetModel.includes('medium')) {
+      if (targetModel.includes('medium') && isThinkingEnabled) {
         requestPayload.reasoning_effort = "high";
       } else {
         if (frequency_penalty !== undefined) {
@@ -201,10 +200,13 @@ app.post('/v1/chat/completions', async (req, res) => {
         messages: processedMessages,
         temperature: temperature !== undefined ? temperature : 0.7,
         max_tokens: max_tokens || 16384,
-        reasoning: { effort: "high" },
-        include_reasoning: true,
         stream: stream || false
       };
+
+      if (isThinkingEnabled) {
+        requestPayload.reasoning = { effort: "high" };
+        requestPayload.include_reasoning = true;
+      }
     }
     // --- 3. NVIDIA NIM API Route ---
     else {
@@ -215,7 +217,7 @@ app.post('/v1/chat/completions', async (req, res) => {
         });
       }
 
-      const config = getModelConfig(targetModel, ENABLE_THINKING_MODE);
+      const config = getModelConfig(targetModel, isThinkingEnabled);
       requestPayload = {
         model: targetModel,
         messages: processedMessages,
@@ -228,7 +230,7 @@ app.post('/v1/chat/completions', async (req, res) => {
         requestPayload.chat_template_kwargs = config.chatTemplateKwargs;
       }
 
-      if (targetModel.toLowerCase().includes('mistral-medium-3.5')) {
+      if (targetModel.toLowerCase().includes('mistral-medium-3.5') && isThinkingEnabled) {
         requestPayload.reasoning_effort = "high";
       }
     }
@@ -268,11 +270,9 @@ app.post('/v1/chat/completions', async (req, res) => {
                 let reasoningText = "";
                 let contentText = "";
 
-                // Parse OpenRouter & NIM reasoning parameters
                 if (deltaChoice.reasoning_content) reasoningText += deltaChoice.reasoning_content;
                 if (deltaChoice.reasoning) reasoningText += deltaChoice.reasoning;
 
-                // Parse Mistral AI stream array structure
                 if (Array.isArray(deltaChoice.content)) {
                   deltaChoice.content.forEach(item => {
                     if (item.type === 'thinking' && item.thinking) {
@@ -285,8 +285,8 @@ app.post('/v1/chat/completions', async (req, res) => {
                   contentText += deltaChoice.content;
                 }
 
-                // Format & wrap into <think> ... </think> tags
-                if (SHOW_REASONING) {
+                // Format & wrap into <think> ... </think> tags HANYA JIKA THINKING MODE AKTIF
+                if (isThinkingEnabled) {
                   let combined = '';
                   
                   if (reasoningText && !reasoningStarted) {
@@ -309,6 +309,7 @@ app.post('/v1/chat/completions', async (req, res) => {
                     delete data.choices[0].delta.reasoning;
                   }
                 } else {
+                  // Jika thinking mati, abaikan semua teks reasoning dan hanya teruskan content
                   data.choices[0].delta.content = contentText;
                   delete data.choices[0].delta.reasoning_content;
                   delete data.choices[0].delta.reasoning;
@@ -347,7 +348,7 @@ app.post('/v1/chat/completions', async (req, res) => {
         if (choice.message?.reasoning) reasoningText += choice.message.reasoning;
       }
 
-      if (SHOW_REASONING && reasoningText.trim()) {
+      if (isThinkingEnabled && reasoningText.trim()) {
         fullContent = `<think>\n${reasoningText.trim()}\n</think>\n\n` + fullContent;
       }
 
