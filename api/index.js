@@ -1,4 +1,4 @@
-// index.js - OpenAI to NVIDIA NIM, OpenRouter & Mistral AI Proxy
+// index.js - OpenAI to NVIDIA NIM, OpenRouter, Mistral AI & DeepSeek Official Proxy
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -14,8 +14,14 @@ const NIM_API_BASE = process.env.NIM_API_BASE || 'https://integrate.api.nvidia.c
 const NIM_API_KEY = process.env.NIM_API_KEY;
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const MISTRAL_API_KEY = process.env.MISTRAL_API_KEY;
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 
 const MODEL_MAPPING = {
+  // Official DeepSeek API Direct Models
+  'deepseek-v4-flash': 'deepseek-v4-flash',
+  'deepseek-v4-pro': 'deepseek-v4-pro',
+  'deepseek-chat': 'deepseek-chat',
+
   // NVIDIA NIM Models
   'gpt-3.5-turbo': 'thinkingmachines/inkling',
   'gpt-4': 'qwen/qwen3-coder-480b-a35b-instruct',
@@ -81,7 +87,7 @@ function getModelConfig(nimModel, enableThinking) {
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
-    service: 'OpenAI to NVIDIA NIM, OpenRouter & Mistral AI Proxy',
+    service: 'OpenAI to NVIDIA NIM, OpenRouter, Mistral AI & DeepSeek Official Proxy',
     dynamic_thinking: true
   });
 });
@@ -144,6 +150,7 @@ app.post('/v1/chat/completions', async (req, res) => {
     }
 
     // Determine Provider Routing
+    const isOfficialDeepSeek = targetModel === 'deepseek-v4-flash' || targetModel === 'deepseek-v4-pro' || targetModel === 'deepseek-chat';
     const isMistralAPI = targetModel.startsWith('mistral-large') || targetModel.startsWith('mistral-medium-3-5');
     const isOpenRouterAPI = targetModel.includes(':free') || targetModel.startsWith('google/');
 
@@ -154,8 +161,30 @@ app.post('/v1/chat/completions', async (req, res) => {
     };
     let requestPayload = {};
 
-    // --- 1. Mistral AI Official API Route ---
-    if (isMistralAPI) {
+    // --- 1. Official DeepSeek API Route ---
+    if (isOfficialDeepSeek) {
+      const activeDeepSeekKey = DEEPSEEK_API_KEY || clientApiKey;
+      if (!activeDeepSeekKey) {
+        return res.status(401).json({
+          error: { message: 'DEEPSEEK_API_KEY is missing in Vercel environment variables.', type: 'invalid_request_error', code: 401 }
+        });
+      }
+      requestUrl = 'https://api.deepseek.com/chat/completions';
+      requestHeaders = {
+        'Authorization': `Bearer ${activeDeepSeekKey}`,
+        'Content-Type': 'application/json'
+      };
+
+      requestPayload = {
+        model: targetModel,
+        messages: processedMessages,
+        temperature: temperature !== undefined ? temperature : 0.7,
+        max_tokens: max_tokens || 8192,
+        stream: stream || false
+      };
+    }
+    // --- 2. Mistral AI Official API Route ---
+    else if (isMistralAPI) {
       if (!MISTRAL_API_KEY) {
         return res.status(401).json({
           error: { message: 'MISTRAL_API_KEY is missing in Vercel environment variables.', type: 'invalid_request_error', code: 401 }
@@ -180,7 +209,7 @@ app.post('/v1/chat/completions', async (req, res) => {
         }
       }
     }
-    // --- 2. OpenRouter API Route ---
+    // --- 3. OpenRouter API Route ---
     else if (isOpenRouterAPI) {
       if (!OPENROUTER_API_KEY) {
         return res.status(401).json({
@@ -208,7 +237,7 @@ app.post('/v1/chat/completions', async (req, res) => {
         requestPayload.include_reasoning = true;
       }
     }
-    // --- 3. NVIDIA NIM API Route ---
+    // --- 4. NVIDIA NIM API Route ---
     else {
       const activeApiKey = NIM_API_KEY || clientApiKey;
       if (!activeApiKey || activeApiKey === 'dummy-key') {
