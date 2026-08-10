@@ -1,4 +1,4 @@
-// index.js - Multi-Provider OpenAI Proxy (NVIDIA NIM, DeepSeek Official, Mistral AI & OpenRouter)
+// index.js - OpenAI to NVIDIA NIM, OpenRouter, Mistral AI & DeepSeek Official Proxy
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -17,12 +17,7 @@ const MISTRAL_API_KEY = process.env.MISTRAL_API_KEY;
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 
 const MODEL_MAPPING = {
-  // 1. Official DeepSeek API Direct Models
-  'deepseek-v4-flash': 'deepseek-v4-flash',
-  'deepseek-v4-pro': 'deepseek-v4-pro',
-  'deepseek-chat': 'deepseek-chat',
-
-  // 2. NVIDIA NIM Models
+  // 1. NVIDIA NIM Models
   'claude-3-opus': 'z-ai/glm-5.2', // Main Default
   'nemotron-3-ultra': 'nvidia/nemotron-3-ultra-550b-a55b',
   'laguna-xs-2.1': 'poolside/laguna-xs-2.1',
@@ -32,10 +27,14 @@ const MODEL_MAPPING = {
   'gpt-3.5-turbo': 'thinkingmachines/inkling',
   'mistral-medium-3.5': 'mistralai/mistral-medium-3.5-128b',
 
+  // 2. Official DeepSeek API Direct Models
+  'deepseek-v4-flash': 'deepseek-v4-flash',
+  'deepseek-v4-pro': 'deepseek-v4-pro',
+  'deepseek-chat': 'deepseek-chat',
+
   // 3. OpenRouter Free Gemma Models
   'gemma-4-31b': 'google/gemma-4-31b-it:free',
   'gemma-4-26b': 'google/gemma-4-26b-a4b-it:free',
-  'gemini-3-flash': 'google/gemma-4-31b-it:free',
 
   // 4. Mistral AI Official API Models
   'mistral-large-2512': 'mistral-large-latest',
@@ -45,23 +44,25 @@ const MODEL_MAPPING = {
 function getModelConfig(nimModel, enableThinking) {
   let maxTokens = 16384; 
   let chatTemplateKwargs = undefined;
-  let extraParams = {};
+  let reasoningBudget = undefined;
+  let tempOverride = undefined;
+  let topPOverride = undefined;
 
   const modelLower = nimModel.toLowerCase();
 
   if (modelLower.includes('nemotron-3-ultra')) {
     maxTokens = 16384;
-    extraParams = { top_p: 0.95 };
+    tempOverride = 1.0;
+    topPOverride = 0.95;
     if (enableThinking) {
       chatTemplateKwargs = { enable_thinking: true };
-      extraParams.reasoning_budget = 16384;
-    } else {
-      chatTemplateKwargs = { enable_thinking: false };
+      reasoningBudget = 16384;
     }
   }
   else if (modelLower.includes('laguna-xs')) {
     maxTokens = 8192;
-    extraParams = { top_p: 0.95 };
+    tempOverride = 1.0;
+    topPOverride = 0.95;
   }
   else if (modelLower.includes('minimax-m3') || modelLower.includes('minimax-3')) {
     maxTokens = 8192;
@@ -84,14 +85,13 @@ function getModelConfig(nimModel, enableThinking) {
     chatTemplateKwargs = undefined; 
   }
 
-  return { maxTokens, chatTemplateKwargs, extraParams };
+  return { maxTokens, chatTemplateKwargs, reasoningBudget, tempOverride, topPOverride };
 }
 
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
-    service: 'OpenAI Proxy (NVIDIA NIM, DeepSeek, Mistral & OpenRouter)',
-    default_model: 'z-ai/glm-5.2',
+    service: 'OpenAI to NVIDIA NIM, OpenRouter, Mistral AI & DeepSeek Official Proxy',
     dynamic_thinking: true
   });
 });
@@ -118,10 +118,10 @@ app.post('/v1/chat/completions', async (req, res) => {
 
     let targetModel = MODEL_MAPPING[model] || model;
 
-    // 1. Get raw messages
+    // 1. Raw Messages
     let rawMessages = JSON.parse(JSON.stringify(messages));
 
-    // 2. CONTEXT OPTIMIZATION: Clean past <think>...</think> blocks from previous assistant history
+    // 2. CONTEXT OPTIMIZATION: Clean <think>...</think> tags from assistant history
     let processedMessages = rawMessages.map(m => {
       if (m.role === 'assistant' && typeof m.content === 'string') {
         const cleanContent = m.content.replace(/<think>([\s\S]*?)(?:<\/think>|$)/gi, '').trim();
@@ -130,19 +130,19 @@ app.post('/v1/chat/completions', async (req, res) => {
       return m;
     });
 
-    // 3. Construct dynamic Negative Constraint Directive if forbiddenWords provided
+    // 3. Construct dynamic Negative Constraint Directive if forbiddenWords are present
     let negativeConstraint = "";
     if (forbiddenWords && typeof forbiddenWords === 'string' && forbiddenWords.trim().length > 0) {
       negativeConstraint = `\n\n[CRITICAL NEGATIVE CONSTRAINTS: You are strictly forbidden from outputting or using any of the following words, phrases, AI clichés, or behaviors: ${forbiddenWords.trim()}. Choose natural, creative alternatives and adhere strictly to these exclusions.]`;
     }
 
-    // 4. Prompt-Forced Thinking for Mistral Large (ONLY WHEN THINKING IS ENABLED)
+    // 4. Prompt-Forced Thinking for Mistral Large (ONLY IF THINKING IS ACTIVE)
     let forcedThinkingDirective = "";
     if (targetModel === 'mistral-large-latest' && isThinkingEnabled) {
       forcedThinkingDirective = `\n\n[REASONING DIRECTIVE: Before providing your final answer, write out your detailed step-by-step thinking process inside <think>...</think> tags.]`;
     }
 
-    // Combine system prompt directives
+    // Append extra system instructions
     const extraSystemInstructions = negativeConstraint + forcedThinkingDirective;
     if (extraSystemInstructions.trim()) {
       const sysMsgIndex = processedMessages.findIndex(m => m.role === 'system');
@@ -156,7 +156,7 @@ app.post('/v1/chat/completions', async (req, res) => {
     // Determine Provider Routing
     const isOfficialDeepSeek = targetModel === 'deepseek-v4-flash' || targetModel === 'deepseek-v4-pro' || targetModel === 'deepseek-chat';
     const isMistralAPI = targetModel.startsWith('mistral-large') || targetModel.startsWith('mistral-medium-3-5');
-    const isOpenRouterAPI = targetModel.includes(':free') || targetModel.startsWith('google/') && targetModel.includes(':free');
+    const isOpenRouterAPI = targetModel.includes(':free') || targetModel.startsWith('google/');
 
     let requestUrl = `${NIM_API_BASE}/chat/completions`;
     let requestHeaders = {
@@ -254,14 +254,25 @@ app.post('/v1/chat/completions', async (req, res) => {
       requestPayload = {
         model: targetModel,
         messages: processedMessages,
-        temperature: temperature !== undefined ? temperature : 0.7,
+        temperature: config.tempOverride !== undefined ? config.tempOverride : (temperature !== undefined ? temperature : 0.7),
         max_tokens: max_tokens ? Math.min(max_tokens, config.maxTokens) : config.maxTokens,
-        stream: stream || false,
-        ...config.extraParams
+        stream: stream || false
       };
+
+      if (config.topPOverride !== undefined) {
+        requestPayload.top_p = config.topPOverride;
+      }
 
       if (config.chatTemplateKwargs) {
         requestPayload.chat_template_kwargs = config.chatTemplateKwargs;
+      }
+
+      if (config.reasoningBudget) {
+        requestPayload.reasoning_budget = config.reasoningBudget;
+      }
+
+      if (targetModel.toLowerCase().includes('mistral-medium-3.5') && isThinkingEnabled) {
+        requestPayload.reasoning_effort = "high";
       }
     }
 
@@ -315,7 +326,7 @@ app.post('/v1/chat/completions', async (req, res) => {
                   contentText += deltaChoice.content;
                 }
 
-                // Format & wrap into <think> ... </think> tags ONLY IF THINKING IS ENABLED
+                // Format & wrap into <think> ... </think> tags IF THINKING MODE IS ACTIVE
                 if (isThinkingEnabled) {
                   let combined = '';
                   
@@ -339,7 +350,7 @@ app.post('/v1/chat/completions', async (req, res) => {
                     delete data.choices[0].delta.reasoning;
                   }
                 } else {
-                  // If thinking is disabled, pass content only
+                  // If thinking is off, strip reasoning text and forward content only
                   data.choices[0].delta.content = contentText;
                   delete data.choices[0].delta.reasoning_content;
                   delete data.choices[0].delta.reasoning;
