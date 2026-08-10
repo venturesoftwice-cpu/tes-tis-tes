@@ -1,4 +1,4 @@
-// index.js - OpenAI to NVIDIA NIM, OpenRouter, Mistral AI & DeepSeek Official Proxy
+// index.js - Multi-Provider OpenAI Proxy (NVIDIA NIM, DeepSeek Official, Mistral AI & OpenRouter)
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -17,31 +17,27 @@ const MISTRAL_API_KEY = process.env.MISTRAL_API_KEY;
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 
 const MODEL_MAPPING = {
-  // Official DeepSeek API Direct Models
+  // 1. Official DeepSeek API Direct Models
   'deepseek-v4-flash': 'deepseek-v4-flash',
   'deepseek-v4-pro': 'deepseek-v4-pro',
   'deepseek-chat': 'deepseek-chat',
 
-  // NVIDIA NIM Models
-  'gpt-3.5-turbo': 'thinkingmachines/inkling',
-  'gpt-4': 'qwen/qwen3-coder-480b-a35b-instruct',
-  'gpt-4-turbo': 'google/gemma-4-31b-it',
-  'gpt-4o': 'deepseek-ai/deepseek-v4-pro', 
-  'claude-3-opus': 'z-ai/glm-5.2',
-  'claude-3-sonnet': 'deepseek-ai/deepseek-v4-flash',
+  // 2. NVIDIA NIM Models
+  'claude-3-opus': 'z-ai/glm-5.2', // Main Default
+  'nemotron-3-ultra': 'nvidia/nemotron-3-ultra-550b-a55b',
+  'laguna-xs-2.1': 'poolside/laguna-xs-2.1',
+  'minimax-m3': 'minimaxai/minimax-m3',
   'gemini-pro': 'google/diffusiongemma-26b-a4b-it',
+  'gpt-4-turbo': 'google/gemma-4-31b-it',
+  'gpt-3.5-turbo': 'thinkingmachines/inkling',
   'mistral-medium-3.5': 'mistralai/mistral-medium-3.5-128b',
 
-  // MiniMax NVIDIA NIM Models
-  'minimax-m3': 'minimaxai/minimax-m3',
-  'minimax-m2.7': 'minimaxai/minimax-m2.7',
-
-  // OpenRouter Free Gemma Models
+  // 3. OpenRouter Free Gemma Models
   'gemma-4-31b': 'google/gemma-4-31b-it:free',
   'gemma-4-26b': 'google/gemma-4-26b-a4b-it:free',
   'gemini-3-flash': 'google/gemma-4-31b-it:free',
 
-  // Mistral AI Official API Models
+  // 4. Mistral AI Official API Models
   'mistral-large-2512': 'mistral-large-latest',
   'mistral-medium-2508': 'mistral-medium-3-5'
 };
@@ -49,29 +45,32 @@ const MODEL_MAPPING = {
 function getModelConfig(nimModel, enableThinking) {
   let maxTokens = 16384; 
   let chatTemplateKwargs = undefined;
+  let extraParams = {};
 
   const modelLower = nimModel.toLowerCase();
 
-  if (modelLower.includes('minimax-m3') || modelLower.includes('minimax-3')) {
+  if (modelLower.includes('nemotron-3-ultra')) {
+    maxTokens = 16384;
+    extraParams = { top_p: 0.95 };
+    if (enableThinking) {
+      chatTemplateKwargs = { enable_thinking: true };
+      extraParams.reasoning_budget = 16384;
+    } else {
+      chatTemplateKwargs = { enable_thinking: false };
+    }
+  }
+  else if (modelLower.includes('laguna-xs')) {
+    maxTokens = 8192;
+    extraParams = { top_p: 0.95 };
+  }
+  else if (modelLower.includes('minimax-m3') || modelLower.includes('minimax-3')) {
     maxTokens = 8192;
     chatTemplateKwargs = enableThinking ? { thinking_mode: "enabled" } : { thinking_mode: "disabled" };
-  }
-  else if (modelLower.includes('minimax-m2.7') || modelLower.includes('minimax-2.7')) {
-    maxTokens = 8192;
-    chatTemplateKwargs = undefined;
   }
   else if (modelLower.includes('gemma-4')) {
     maxTokens = 16384;
     chatTemplateKwargs = enableThinking ? { enable_thinking: true } : { enable_thinking: false };
   } 
-  else if (modelLower.includes('deepseek-v4') || modelLower.includes('deepseek')) {
-    maxTokens = 16384;
-    chatTemplateKwargs = enableThinking ? { thinking: true, reasoning_effort: "high" } : { thinking: false };
-  }
-  else if (modelLower.includes('inkling')) {
-    maxTokens = 8192;
-    chatTemplateKwargs = undefined; 
-  }
   else if (modelLower.includes('glm-5.2')) {
     maxTokens = 16384;
     chatTemplateKwargs = enableThinking ? { thinking: { type: "enabled" }, reasoning_effort: "high" } : { thinking: { type: "disabled" } };
@@ -80,14 +79,19 @@ function getModelConfig(nimModel, enableThinking) {
     maxTokens = 4096;
     chatTemplateKwargs = enableThinking ? { enable_thinking: true } : { enable_thinking: false };
   }
+  else if (modelLower.includes('inkling')) {
+    maxTokens = 8192;
+    chatTemplateKwargs = undefined; 
+  }
 
-  return { maxTokens, chatTemplateKwargs };
+  return { maxTokens, chatTemplateKwargs, extraParams };
 }
 
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
-    service: 'OpenAI to NVIDIA NIM, OpenRouter, Mistral AI & DeepSeek Official Proxy',
+    service: 'OpenAI Proxy (NVIDIA NIM, DeepSeek, Mistral & OpenRouter)',
+    default_model: 'z-ai/glm-5.2',
     dynamic_thinking: true
   });
 });
@@ -106,7 +110,7 @@ app.post('/v1/chat/completions', async (req, res) => {
   try {
     const { model, messages, temperature, max_tokens, stream, forbiddenWords, frequency_penalty, enableThinking } = req.body;
     
-    // Baca parameter enableThinking dari UI Client (Default: true)
+    // Read enableThinking from Client UI (Default: true)
     const isThinkingEnabled = enableThinking !== undefined ? Boolean(enableThinking) : true;
 
     const authHeader = req.headers.authorization;
@@ -114,10 +118,10 @@ app.post('/v1/chat/completions', async (req, res) => {
 
     let targetModel = MODEL_MAPPING[model] || model;
 
-    // 1. Dapatkan pesan mentah
+    // 1. Get raw messages
     let rawMessages = JSON.parse(JSON.stringify(messages));
 
-    // 2. OPTIMASI KONTEKS: Bersihkan tag <think>...</think> dari riwayat jawaban asisten terdahulu
+    // 2. CONTEXT OPTIMIZATION: Clean past <think>...</think> blocks from previous assistant history
     let processedMessages = rawMessages.map(m => {
       if (m.role === 'assistant' && typeof m.content === 'string') {
         const cleanContent = m.content.replace(/<think>([\s\S]*?)(?:<\/think>|$)/gi, '').trim();
@@ -126,19 +130,19 @@ app.post('/v1/chat/completions', async (req, res) => {
       return m;
     });
 
-    // 3. Construct dynamic Negative Constraint Directive jika forbiddenWords diisi
+    // 3. Construct dynamic Negative Constraint Directive if forbiddenWords provided
     let negativeConstraint = "";
     if (forbiddenWords && typeof forbiddenWords === 'string' && forbiddenWords.trim().length > 0) {
       negativeConstraint = `\n\n[CRITICAL NEGATIVE CONSTRAINTS: You are strictly forbidden from outputting or using any of the following words, phrases, AI clichés, or behaviors: ${forbiddenWords.trim()}. Choose natural, creative alternatives and adhere strictly to these exclusions.]`;
     }
 
-    // 4. Prompt-Forced Thinking untuk Mistral Large (HANYA DITAMBAHKAN JIKA THINKING MODE AKTIF)
+    // 4. Prompt-Forced Thinking for Mistral Large (ONLY WHEN THINKING IS ENABLED)
     let forcedThinkingDirective = "";
     if (targetModel === 'mistral-large-latest' && isThinkingEnabled) {
       forcedThinkingDirective = `\n\n[REASONING DIRECTIVE: Before providing your final answer, write out your detailed step-by-step thinking process inside <think>...</think> tags.]`;
     }
 
-    // Gabungkan instruksi tambahan ke System Prompt
+    // Combine system prompt directives
     const extraSystemInstructions = negativeConstraint + forcedThinkingDirective;
     if (extraSystemInstructions.trim()) {
       const sysMsgIndex = processedMessages.findIndex(m => m.role === 'system');
@@ -152,7 +156,7 @@ app.post('/v1/chat/completions', async (req, res) => {
     // Determine Provider Routing
     const isOfficialDeepSeek = targetModel === 'deepseek-v4-flash' || targetModel === 'deepseek-v4-pro' || targetModel === 'deepseek-chat';
     const isMistralAPI = targetModel.startsWith('mistral-large') || targetModel.startsWith('mistral-medium-3-5');
-    const isOpenRouterAPI = targetModel.includes(':free') || targetModel.startsWith('google/');
+    const isOpenRouterAPI = targetModel.includes(':free') || targetModel.startsWith('google/') && targetModel.includes(':free');
 
     let requestUrl = `${NIM_API_BASE}/chat/completions`;
     let requestHeaders = {
@@ -252,15 +256,12 @@ app.post('/v1/chat/completions', async (req, res) => {
         messages: processedMessages,
         temperature: temperature !== undefined ? temperature : 0.7,
         max_tokens: max_tokens ? Math.min(max_tokens, config.maxTokens) : config.maxTokens,
-        stream: stream || false
+        stream: stream || false,
+        ...config.extraParams
       };
 
       if (config.chatTemplateKwargs) {
         requestPayload.chat_template_kwargs = config.chatTemplateKwargs;
-      }
-
-      if (targetModel.toLowerCase().includes('mistral-medium-3.5') && isThinkingEnabled) {
-        requestPayload.reasoning_effort = "high";
       }
     }
 
@@ -314,7 +315,7 @@ app.post('/v1/chat/completions', async (req, res) => {
                   contentText += deltaChoice.content;
                 }
 
-                // Format & wrap into <think> ... </think> tags HANYA JIKA THINKING MODE AKTIF
+                // Format & wrap into <think> ... </think> tags ONLY IF THINKING IS ENABLED
                 if (isThinkingEnabled) {
                   let combined = '';
                   
@@ -338,7 +339,7 @@ app.post('/v1/chat/completions', async (req, res) => {
                     delete data.choices[0].delta.reasoning;
                   }
                 } else {
-                  // Jika thinking mati, abaikan semua teks reasoning dan hanya teruskan content
+                  // If thinking is disabled, pass content only
                   data.choices[0].delta.content = contentText;
                   delete data.choices[0].delta.reasoning_content;
                   delete data.choices[0].delta.reasoning;
