@@ -65,6 +65,8 @@ function getModelConfig(nimModel, enableThinking) {
     if (enableThinking) {
       chatTemplateKwargs = { enable_thinking: true };
       reasoningBudget = 16384;
+    } else {
+      chatTemplateKwargs = { enable_thinking: false };
     }
   }
   else if (modelLower.includes('nemotron-3-super')) {
@@ -83,6 +85,12 @@ function getModelConfig(nimModel, enableThinking) {
     tempOverride = 1.0;
     topPOverride = 0.95;
     seedOverride = 42;
+    if (enableThinking) {
+      chatTemplateKwargs = { enable_thinking: true };
+      reasoningBudget = 16384;
+    } else {
+      chatTemplateKwargs = { enable_thinking: false };
+    }
   }
   else if (modelLower.includes('laguna-xs')) {
     maxTokens = 8192;
