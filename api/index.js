@@ -85,12 +85,7 @@ function getModelConfig(nimModel, enableThinking) {
     tempOverride = 1.0;
     topPOverride = 0.95;
     seedOverride = 42;
-    if (enableThinking) {
-      chatTemplateKwargs = { enable_thinking: true };
-      reasoningBudget = 16384;
-    } else {
-      chatTemplateKwargs = { enable_thinking: false };
-    }
+    // StepFun NIM schema rejects extra kwargs & reasoning_budget
   }
   else if (modelLower.includes('laguna-xs')) {
     maxTokens = 8192;
@@ -112,6 +107,7 @@ function getModelConfig(nimModel, enableThinking) {
   else if (modelLower.includes('diffusiongemma') || modelLower.includes('gemma-26b')) {
     maxTokens = 4096;
     chatTemplateKwargs = enableThinking ? { enable_thinking: true } : { enable_thinking: false };
+    // DiffusionGemma accepts enable_thinking but rejects reasoning_budget
   }
   else if (modelLower.includes('inkling')) {
     maxTokens = 8192;
@@ -155,9 +151,13 @@ app.post('/v1/chat/completions', async (req, res) => {
     let rawMessages = JSON.parse(JSON.stringify(messages));
 
     // 2. CONTEXT OPTIMIZATION: Clean <think>...</think> tags from past assistant history
+    // FIX FOR HTTP 400: Never allow content to be an empty string ("")
     let processedMessages = rawMessages.map(m => {
       if (m.role === 'assistant' && typeof m.content === 'string') {
-        const cleanContent = m.content.replace(/<think>([\s\S]*?)(?:<\/think>|$)/gi, '').trim();
+        let cleanContent = m.content.replace(/<think>([\s\S]*?)(?:<\/think>|$)/gi, '').trim();
+        if (!cleanContent) {
+          cleanContent = "(thought process completed)";
+        }
         return { role: m.role, content: cleanContent };
       }
       return m;
