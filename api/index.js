@@ -86,7 +86,7 @@ function getModelConfig(nimModel, enableThinking) {
     tempOverride = 1.0;
     topPOverride = 0.95;
     seedOverride = 42;
-    // StepFun on NIM streams reasoning_content natively. No extra kwargs needed.
+    // StepFun streams reasoning_content natively in delta.content
   }
   else if (modelLower.includes('muse-glimmer')) {
     maxTokens = 8192;
@@ -118,7 +118,6 @@ function getModelConfig(nimModel, enableThinking) {
     if (enableThinking) {
       chatTemplateKwargs = { enable_thinking: true };
     }
-    // DiffusionGemma accepts enable_thinking but rejects reasoning_budget
   }
   else if (modelLower.includes('inkling')) {
     maxTokens = 8192;
@@ -378,6 +377,8 @@ app.post('/v1/chat/completions', async (req, res) => {
       
       let buffer = '';
       let reasoningStarted = false;
+      let stepfunThoughtStarted = false;
+      const isStepFun = targetModel.toLowerCase().includes('step-3.7-flash');
       
       response.data.on('data', (chunk) => {
         buffer += chunk.toString();
@@ -414,6 +415,14 @@ app.post('/v1/chat/completions', async (req, res) => {
                   contentText += deltaChoice.content;
                 }
 
+                // STEPFUN STREAM INTERCEPTOR
+                if (isThinkingEnabled && isStepFun && !stepfunThoughtStarted && contentText.trim().length > 0) {
+                  if (!contentText.startsWith('<think>')) {
+                    contentText = '<think>\n' + contentText;
+                  }
+                  stepfunThoughtStarted = true;
+                }
+
                 // Format & wrap into <think> ... </think> tags IF THINKING MODE IS ACTIVE
                 if (isThinkingEnabled) {
                   let combined = '';
@@ -439,6 +448,10 @@ app.post('/v1/chat/completions', async (req, res) => {
                   }
                 } else {
                   // If thinking is off, strip reasoning text and forward content only
+                  if (isStepFun && contentText.includes('</think>')) {
+                    const parts = contentText.split('</think>');
+                    contentText = parts[parts.length - 1].trim();
+                  }
                   data.choices[0].delta.content = contentText;
                   delete data.choices[0].delta.reasoning_content;
                   delete data.choices[0].delta.reasoning;
