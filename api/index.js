@@ -1,4 +1,4 @@
-// index.js - OpenAI to NVIDIA NIM, OpenRouter, Mistral AI & DeepSeek Official Proxy
+// index.js - OpenAI to NVIDIA NIM, Z.AI, OpenRouter, Mistral AI & DeepSeek Official Proxy
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -15,28 +15,35 @@ const NIM_API_KEY = process.env.NIM_API_KEY;
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const MISTRAL_API_KEY = process.env.MISTRAL_API_KEY;
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
+const ZAI_API_KEY = process.env.ZAI_API_KEY;
 
 const MODEL_MAPPING = {
-  // 1. NVIDIA NIM Models
-  'claude-3-opus': 'z-ai/glm-5.2', // Main Default
-  'nemotron-3-ultra': 'nvidia/nemotron-3-ultra-550b-a55b',
-  'laguna-xs-2.1': 'poolside/laguna-xs-2.1',
-  'minimax-m3': 'minimaxai/minimax-m3',
-  'gemini-pro': 'google/diffusiongemma-26b-a4b-it',
-  'gpt-4-turbo': 'google/gemma-4-31b-it',
-  'gpt-3.5-turbo': 'thinkingmachines/inkling',
-  'mistral-medium-3.5': 'mistralai/mistral-medium-3.5-128b',
+  // 1. NVIDIA NIM Models (User Requested Order)
+  'claude-3-opus': 'z-ai/glm-5.2',                            // 1. GLM 5.2 (Default)
+  'minimax-m3': 'minimaxai/minimax-m3',                        // 2. MiniMax M3
+  'gpt-4-turbo': 'google/gemma-4-31b-it',                      // 3. Gemma 31B
+  'nemotron-3-ultra': 'nvidia/nemotron-3-ultra-550b-a55b',     // 4. Nemotron Ultra
+  'mistral-medium-3.5': 'mistralai/mistral-medium-3.5-128b',   // 5. Mistral 3.5 NIM
+  'step-3.7-flash': 'stepfun-ai/step-3.7-flash',               // 6. Step Flash
+  'nemotron-3-super': 'nvidia/nemotron-3-super-120b-a12b',     // 7. Nemotron Super
+  'gpt-3.5-turbo': 'thinkingmachines/inkling',                 // 8. Inkling
+  'laguna-xs-2.1': 'poolside/laguna-xs-2.1',                   // 9. Laguna
+  'gemini-pro': 'google/diffusiongemma-26b-a4b-it',             // 10. DiffusionGemma 26B
 
-  // 2. Official DeepSeek API Direct Models
+  // 2. Z.ai Official API Direct Models (Free GLM)
+  'glm-4.7-flash': 'glm-4.7-flash',
+  'glm-4.5-flash': 'glm-4.5-flash',
+
+  // 3. Official DeepSeek API Direct Models
   'deepseek-v4-flash': 'deepseek-v4-flash',
   'deepseek-v4-pro': 'deepseek-v4-pro',
   'deepseek-chat': 'deepseek-chat',
 
-  // 3. OpenRouter Free Gemma Models
+  // 4. OpenRouter Free Gemma Models
   'gemma-4-31b': 'google/gemma-4-31b-it:free',
   'gemma-4-26b': 'google/gemma-4-26b-a4b-it:free',
 
-  // 4. Mistral AI Official API Models
+  // 5. Mistral AI Official API Models
   'mistral-large-2512': 'mistral-large-latest',
   'mistral-medium-2508': 'mistral-medium-3-5'
 };
@@ -47,6 +54,7 @@ function getModelConfig(nimModel, enableThinking) {
   let reasoningBudget = undefined;
   let tempOverride = undefined;
   let topPOverride = undefined;
+  let seedOverride = undefined;
 
   const modelLower = nimModel.toLowerCase();
 
@@ -58,6 +66,23 @@ function getModelConfig(nimModel, enableThinking) {
       chatTemplateKwargs = { enable_thinking: true };
       reasoningBudget = 16384;
     }
+  }
+  else if (modelLower.includes('nemotron-3-super')) {
+    maxTokens = 16384;
+    tempOverride = 1.0;
+    topPOverride = 0.95;
+    if (enableThinking) {
+      chatTemplateKwargs = { enable_thinking: true };
+      reasoningBudget = 16384;
+    } else {
+      chatTemplateKwargs = { enable_thinking: false };
+    }
+  }
+  else if (modelLower.includes('step-3.7-flash')) {
+    maxTokens = 16384;
+    tempOverride = 1.0;
+    topPOverride = 0.95;
+    seedOverride = 42;
   }
   else if (modelLower.includes('laguna-xs')) {
     maxTokens = 8192;
@@ -85,13 +110,13 @@ function getModelConfig(nimModel, enableThinking) {
     chatTemplateKwargs = undefined; 
   }
 
-  return { maxTokens, chatTemplateKwargs, reasoningBudget, tempOverride, topPOverride };
+  return { maxTokens, chatTemplateKwargs, reasoningBudget, tempOverride, topPOverride, seedOverride };
 }
 
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
-    service: 'OpenAI to NVIDIA NIM, OpenRouter, Mistral AI & DeepSeek Official Proxy',
+    service: 'OpenAI to NVIDIA NIM, Z.AI, OpenRouter, Mistral AI & DeepSeek Official Proxy',
     dynamic_thinking: true
   });
 });
@@ -110,7 +135,7 @@ app.post('/v1/chat/completions', async (req, res) => {
   try {
     const { model, messages, temperature, max_tokens, stream, forbiddenWords, frequency_penalty, enableThinking } = req.body;
     
-    // Read enableThinking from Client UI (Default: true)
+    // Read enableThinking parameter from Client UI (Default: true)
     const isThinkingEnabled = enableThinking !== undefined ? Boolean(enableThinking) : true;
 
     const authHeader = req.headers.authorization;
@@ -121,7 +146,7 @@ app.post('/v1/chat/completions', async (req, res) => {
     // 1. Raw Messages
     let rawMessages = JSON.parse(JSON.stringify(messages));
 
-    // 2. CONTEXT OPTIMIZATION: Clean <think>...</think> tags from assistant history
+    // 2. CONTEXT OPTIMIZATION: Clean <think>...</think> tags from past assistant history
     let processedMessages = rawMessages.map(m => {
       if (m.role === 'assistant' && typeof m.content === 'string') {
         const cleanContent = m.content.replace(/<think>([\s\S]*?)(?:<\/think>|$)/gi, '').trim();
@@ -130,7 +155,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       return m;
     });
 
-    // 3. Construct dynamic Negative Constraint Directive if forbiddenWords are present
+    // 3. Construct dynamic Negative Constraint Directive if forbiddenWords are set
     let negativeConstraint = "";
     if (forbiddenWords && typeof forbiddenWords === 'string' && forbiddenWords.trim().length > 0) {
       negativeConstraint = `\n\n[CRITICAL NEGATIVE CONSTRAINTS: You are strictly forbidden from outputting or using any of the following words, phrases, AI clichés, or behaviors: ${forbiddenWords.trim()}. Choose natural, creative alternatives and adhere strictly to these exclusions.]`;
@@ -154,6 +179,7 @@ app.post('/v1/chat/completions', async (req, res) => {
     }
 
     // Determine Provider Routing
+    const isZaiAPI = targetModel === 'glm-4.7-flash' || targetModel === 'glm-4.5-flash';
     const isOfficialDeepSeek = targetModel === 'deepseek-v4-flash' || targetModel === 'deepseek-v4-pro' || targetModel === 'deepseek-chat';
     const isMistralAPI = targetModel.startsWith('mistral-large') || targetModel.startsWith('mistral-medium-3-5');
     const isOpenRouterAPI = targetModel.includes(':free') || targetModel.startsWith('google/');
@@ -165,8 +191,41 @@ app.post('/v1/chat/completions', async (req, res) => {
     };
     let requestPayload = {};
 
-    // --- 1. Official DeepSeek API Route ---
-    if (isOfficialDeepSeek) {
+    // --- 1. Z.AI Official API Route (Free GLM Flash) ---
+    if (isZaiAPI) {
+      const activeZaiKey = ZAI_API_KEY || clientApiKey;
+      if (!activeZaiKey) {
+        return res.status(401).json({
+          error: { message: 'ZAI_API_KEY is missing in Vercel environment variables.', type: 'invalid_request_error', code: 401 }
+        });
+      }
+      requestUrl = 'https://api.z.ai/api/paas/v4/chat/completions';
+      requestHeaders = {
+        'Authorization': `Bearer ${activeZaiKey}`,
+        'Content-Type': 'application/json'
+      };
+
+      requestPayload = {
+        model: targetModel,
+        messages: processedMessages,
+        temperature: temperature !== undefined ? temperature : 0.7,
+        max_tokens: max_tokens || 8192,
+        stream: stream || false
+      };
+
+      if (isThinkingEnabled) {
+        requestPayload.thinking = {
+          type: "enabled",
+          clear_thinking: false
+        };
+      } else {
+        requestPayload.thinking = {
+          type: "disabled"
+        };
+      }
+    }
+    // --- 2. Official DeepSeek API Route ---
+    else if (isOfficialDeepSeek) {
       const activeDeepSeekKey = DEEPSEEK_API_KEY || clientApiKey;
       if (!activeDeepSeekKey) {
         return res.status(401).json({
@@ -187,7 +246,7 @@ app.post('/v1/chat/completions', async (req, res) => {
         stream: stream || false
       };
     }
-    // --- 2. Mistral AI Official API Route ---
+    // --- 3. Mistral AI Official API Route ---
     else if (isMistralAPI) {
       if (!MISTRAL_API_KEY) {
         return res.status(401).json({
@@ -213,7 +272,7 @@ app.post('/v1/chat/completions', async (req, res) => {
         }
       }
     }
-    // --- 3. OpenRouter API Route ---
+    // --- 4. OpenRouter API Route ---
     else if (isOpenRouterAPI) {
       if (!OPENROUTER_API_KEY) {
         return res.status(401).json({
@@ -241,7 +300,7 @@ app.post('/v1/chat/completions', async (req, res) => {
         requestPayload.include_reasoning = true;
       }
     }
-    // --- 4. NVIDIA NIM API Route ---
+    // --- 5. NVIDIA NIM API Route ---
     else {
       const activeApiKey = NIM_API_KEY || clientApiKey;
       if (!activeApiKey || activeApiKey === 'dummy-key') {
@@ -261,6 +320,10 @@ app.post('/v1/chat/completions', async (req, res) => {
 
       if (config.topPOverride !== undefined) {
         requestPayload.top_p = config.topPOverride;
+      }
+
+      if (config.seedOverride !== undefined) {
+        requestPayload.seed = config.seedOverride;
       }
 
       if (config.chatTemplateKwargs) {
