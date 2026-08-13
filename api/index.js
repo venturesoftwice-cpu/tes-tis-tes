@@ -18,7 +18,7 @@ const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 const ZAI_API_KEY = process.env.ZAI_API_KEY;
 
 const MODEL_MAPPING = {
-  // 1. NVIDIA NIM Models (User Requested Order)
+  // 1. NVIDIA NIM Models (User Custom Order)
   'claude-3-opus': 'z-ai/glm-5.2',                            // 1. GLM 5.2 (Default)
   'minimax-m3': 'minimaxai/minimax-m3',                        // 2. MiniMax M3
   'gpt-4-turbo': 'google/gemma-4-31b-it',                      // 3. Gemma 31B
@@ -26,9 +26,10 @@ const MODEL_MAPPING = {
   'mistral-medium-3.5': 'mistralai/mistral-medium-3.5-128b',   // 5. Mistral 3.5 NIM
   'step-3.7-flash': 'stepfun-ai/step-3.7-flash',               // 6. Step Flash
   'nemotron-3-super': 'nvidia/nemotron-3-super-120b-a12b',     // 7. Nemotron Super
-  'gpt-3.5-turbo': 'thinkingmachines/inkling',                 // 8. Inkling
-  'laguna-xs-2.1': 'poolside/laguna-xs-2.1',                   // 9. Laguna
-  'gemini-pro': 'google/diffusiongemma-26b-a4b-it',             // 10. DiffusionGemma 26B
+  'muse-glimmer': 'meta/muse-glimmer-30b',                    // 8. Muse Glimmer 30B
+  'gpt-3.5-turbo': 'thinkingmachines/inkling',                 // 9. Inkling
+  'laguna-xs-2.1': 'poolside/laguna-xs-2.1',                   // 10. Laguna
+  'gemini-pro': 'google/diffusiongemma-26b-a4b-it',             // 11. DiffusionGemma 26B
 
   // 2. Z.ai Official API Direct Models (Free GLM)
   'glm-4.7-flash': 'glm-4.7-flash',
@@ -85,7 +86,13 @@ function getModelConfig(nimModel, enableThinking) {
     tempOverride = 1.0;
     topPOverride = 0.95;
     seedOverride = 42;
-    // StepFun NIM schema rejects extra kwargs & reasoning_budget
+    // StepFun on NIM streams reasoning_content natively. No extra kwargs needed.
+  }
+  else if (modelLower.includes('muse-glimmer')) {
+    maxTokens = 8192;
+    tempOverride = 1.0;
+    topPOverride = 0.95;
+    // Reasoning strength is injected dynamically into system prompt for Muse Glimmer
   }
   else if (modelLower.includes('laguna-xs')) {
     maxTokens = 8192;
@@ -106,7 +113,11 @@ function getModelConfig(nimModel, enableThinking) {
   }
   else if (modelLower.includes('diffusiongemma') || modelLower.includes('gemma-26b')) {
     maxTokens = 4096;
-    chatTemplateKwargs = enableThinking ? { enable_thinking: true } : { enable_thinking: false };
+    tempOverride = 1.0;
+    topPOverride = 0.95;
+    if (enableThinking) {
+      chatTemplateKwargs = { enable_thinking: true };
+    }
     // DiffusionGemma accepts enable_thinking but rejects reasoning_budget
   }
   else if (modelLower.includes('inkling')) {
@@ -151,7 +162,7 @@ app.post('/v1/chat/completions', async (req, res) => {
     let rawMessages = JSON.parse(JSON.stringify(messages));
 
     // 2. CONTEXT OPTIMIZATION: Clean <think>...</think> tags from past assistant history
-    // FIX FOR HTTP 400: Never allow content to be an empty string ("")
+    // FIX FOR HTTP 400: Never allow assistant content to be an empty string ("")
     let processedMessages = rawMessages.map(m => {
       if (m.role === 'assistant' && typeof m.content === 'string') {
         let cleanContent = m.content.replace(/<think>([\s\S]*?)(?:<\/think>|$)/gi, '').trim();
@@ -169,14 +180,20 @@ app.post('/v1/chat/completions', async (req, res) => {
       negativeConstraint = `\n\n[CRITICAL NEGATIVE CONSTRAINTS: You are strictly forbidden from outputting or using any of the following words, phrases, AI clichés, or behaviors: ${forbiddenWords.trim()}. Choose natural, creative alternatives and adhere strictly to these exclusions.]`;
     }
 
-    // 4. Prompt-Forced Thinking for Mistral Large (ONLY IF THINKING IS ACTIVE)
+    // 4. Prompt-Forced Thinking for Mistral Large
     let forcedThinkingDirective = "";
     if (targetModel === 'mistral-large-latest' && isThinkingEnabled) {
       forcedThinkingDirective = `\n\n[REASONING DIRECTIVE: Before providing your final answer, write out your detailed step-by-step thinking process inside <think>...</think> tags.]`;
     }
 
+    // 5. Reasoning Strength Control for Muse Glimmer 30B
+    let museGlimmerDirective = "";
+    if (targetModel.toLowerCase().includes('muse-glimmer')) {
+      museGlimmerDirective = isThinkingEnabled ? "\n\n[Reasoning strength: high]" : "\n\n[Reasoning strength: low]";
+    }
+
     // Append extra system instructions
-    const extraSystemInstructions = negativeConstraint + forcedThinkingDirective;
+    const extraSystemInstructions = negativeConstraint + forcedThinkingDirective + museGlimmerDirective;
     if (extraSystemInstructions.trim()) {
       const sysMsgIndex = processedMessages.findIndex(m => m.role === 'system');
       if (sysMsgIndex !== -1) {
