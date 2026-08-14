@@ -210,7 +210,7 @@ app.post('/v1/chat/completions', async (req, res) => {
 
     let requestUrl = `${NIM_API_BASE}/chat/completions`;
     let requestHeaders = {
-      'Authorization': `Bearer ${NIM_API_KEY || clientApiKey}`,
+      'Authorization': `Bearer ${clientApiKey || NIM_API_KEY}`,
       'Content-Type': 'application/json'
     };
     let requestPayload = {};
