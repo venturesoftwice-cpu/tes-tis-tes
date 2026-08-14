@@ -86,13 +86,11 @@ function getModelConfig(nimModel, enableThinking) {
     tempOverride = 1.0;
     topPOverride = 0.95;
     seedOverride = 42;
-    // StepFun streams reasoning_content natively in delta.content
   }
   else if (modelLower.includes('muse-glimmer')) {
     maxTokens = 8192;
     tempOverride = 1.0;
     topPOverride = 0.95;
-    // Reasoning strength is injected dynamically into system prompt for Muse Glimmer
   }
   else if (modelLower.includes('laguna-xs')) {
     maxTokens = 8192;
@@ -103,7 +101,7 @@ function getModelConfig(nimModel, enableThinking) {
     maxTokens = 8192;
     chatTemplateKwargs = enableThinking ? { thinking_mode: "enabled" } : { thinking_mode: "disabled" };
   }
-  else if (modelLower.includes('gemma-4')) {
+  else if (modelLower.includes('gemma-4-31b-it')) {
     maxTokens = 16384;
     chatTemplateKwargs = enableThinking ? { enable_thinking: true } : { enable_thinking: false };
   } 
@@ -161,7 +159,6 @@ app.post('/v1/chat/completions', async (req, res) => {
     let rawMessages = JSON.parse(JSON.stringify(messages));
 
     // 2. CONTEXT OPTIMIZATION: Clean <think>...</think> tags from past assistant history
-    // FIX FOR HTTP 400: Never allow assistant content to be an empty string ("")
     let processedMessages = rawMessages.map(m => {
       if (m.role === 'assistant' && typeof m.content === 'string') {
         let cleanContent = m.content.replace(/<think>([\s\S]*?)(?:<\/think>|$)/gi, '').trim();
@@ -202,11 +199,11 @@ app.post('/v1/chat/completions', async (req, res) => {
       }
     }
 
-    // Determine Provider Routing
+    // Determine Provider Routing (FIXED: Only route to OpenRouter if targetModel ends with :free)
     const isZaiAPI = targetModel === 'glm-4.7-flash' || targetModel === 'glm-4.5-flash';
     const isOfficialDeepSeek = targetModel === 'deepseek-v4-flash' || targetModel === 'deepseek-v4-pro' || targetModel === 'deepseek-chat';
     const isMistralAPI = targetModel.startsWith('mistral-large') || targetModel.startsWith('mistral-medium-3-5');
-    const isOpenRouterAPI = targetModel.includes(':free') || targetModel.startsWith('google/');
+    const isOpenRouterAPI = targetModel.endsWith(':free');
 
     let requestUrl = `${NIM_API_BASE}/chat/completions`;
     let requestHeaders = {
@@ -326,7 +323,7 @@ app.post('/v1/chat/completions', async (req, res) => {
     }
     // --- 5. NVIDIA NIM API Route ---
     else {
-      const activeApiKey = NIM_API_KEY || clientApiKey;
+      const activeApiKey = clientApiKey || NIM_API_KEY;
       if (!activeApiKey || activeApiKey === 'dummy-key') {
         return res.status(401).json({
           error: { message: 'NVIDIA API Key is missing.', type: 'invalid_request_error', code: 401 }
