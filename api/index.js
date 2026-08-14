@@ -323,7 +323,7 @@ app.post('/v1/chat/completions', async (req, res) => {
     }
     // --- 5. NVIDIA NIM API Route ---
     else {
-      const activeApiKey = clientApiKey || NIM_API_KEY;
+      const activeApiKey = NIM_API_KEY || clientApiKey;
       if (!activeApiKey || activeApiKey === 'dummy-key') {
         return res.status(401).json({
           error: { message: 'NVIDIA API Key is missing.', type: 'invalid_request_error', code: 401 }
