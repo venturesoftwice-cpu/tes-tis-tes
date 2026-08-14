@@ -176,10 +176,10 @@ app.post('/v1/chat/completions', async (req, res) => {
       negativeConstraint = `\n\n[CRITICAL NEGATIVE CONSTRAINTS: You are strictly forbidden from outputting or using any of the following words, phrases, AI clichés, or behaviors: ${forbiddenWords.trim()}. Choose natural, creative alternatives and adhere strictly to these exclusions.]`;
     }
 
-    // 4. Prompt-Forced Thinking for Mistral Large
+    // 4. Prompt-Forced Thinking for Mistral Large & StepFun 3.7 Flash
     let forcedThinkingDirective = "";
-    if (targetModel === 'mistral-large-latest' && isThinkingEnabled) {
-      forcedThinkingDirective = `\n\n[REASONING DIRECTIVE: Before providing your final answer, write out your detailed step-by-step thinking process inside <think>...</think> tags.]`;
+    if ((targetModel === 'mistral-large-latest' || targetModel.toLowerCase().includes('step-3.7-flash')) && isThinkingEnabled) {
+      forcedThinkingDirective = `\n\n[REASONING DIRECTIVE: Start your response with <think> followed by your step-by-step thinking process, and close it with </think> before writing your final answer.]`;
     }
 
     // 5. Reasoning Strength Control for Muse Glimmer 30B
@@ -367,8 +367,6 @@ app.post('/v1/chat/completions', async (req, res) => {
       
       let buffer = '';
       let reasoningStarted = false;
-      let stepfunThoughtStarted = false;
-      const isStepFun = targetModel.toLowerCase().includes('step-3.7-flash');
       
       response.data.on('data', (chunk) => {
         buffer += chunk.toString();
@@ -405,14 +403,6 @@ app.post('/v1/chat/completions', async (req, res) => {
                   contentText += deltaChoice.content;
                 }
 
-                // STEPFUN STREAM INTERCEPTOR
-                if (isThinkingEnabled && isStepFun && !stepfunThoughtStarted && contentText.trim().length > 0) {
-                  if (!contentText.startsWith('<think>')) {
-                    contentText = '<think>\n' + contentText;
-                  }
-                  stepfunThoughtStarted = true;
-                }
-
                 // Format & wrap into <think> ... </think> tags IF THINKING MODE IS ACTIVE
                 if (isThinkingEnabled) {
                   let combined = '';
@@ -438,10 +428,6 @@ app.post('/v1/chat/completions', async (req, res) => {
                   }
                 } else {
                   // If thinking is off, strip reasoning text and forward content only
-                  if (isStepFun && contentText.includes('</think>')) {
-                    const parts = contentText.split('</think>');
-                    contentText = parts[parts.length - 1].trim();
-                  }
                   data.choices[0].delta.content = contentText;
                   delete data.choices[0].delta.reasoning_content;
                   delete data.choices[0].delta.reasoning;
