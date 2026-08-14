@@ -199,7 +199,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       }
     }
 
-    // Determine Provider Routing (FIXED: Only route to OpenRouter if targetModel ends with :free)
+    // Determine Provider Routing
     const isZaiAPI = targetModel === 'glm-4.7-flash' || targetModel === 'glm-4.5-flash';
     const isOfficialDeepSeek = targetModel === 'deepseek-v4-flash' || targetModel === 'deepseek-v4-pro' || targetModel === 'deepseek-chat';
     const isMistralAPI = targetModel.startsWith('mistral-large') || targetModel.startsWith('mistral-medium-3-5');
@@ -207,24 +207,20 @@ app.post('/v1/chat/completions', async (req, res) => {
 
     let requestUrl = `${NIM_API_BASE}/chat/completions`;
     let requestHeaders = {
-      'Authorization': `Bearer ${clientApiKey || NIM_API_KEY}`,
       'Content-Type': 'application/json'
     };
     let requestPayload = {};
 
     // --- 1. Z.AI Official API Route (Free GLM Flash) ---
     if (isZaiAPI) {
-      const activeZaiKey = ZAI_API_KEY || clientApiKey;
+      const activeZaiKey = (ZAI_API_KEY && ZAI_API_KEY.trim()) ? ZAI_API_KEY.trim() : clientApiKey;
       if (!activeZaiKey) {
         return res.status(401).json({
           error: { message: 'ZAI_API_KEY is missing in Vercel environment variables.', type: 'invalid_request_error', code: 401 }
         });
       }
       requestUrl = 'https://api.z.ai/api/paas/v4/chat/completions';
-      requestHeaders = {
-        'Authorization': `Bearer ${activeZaiKey}`,
-        'Content-Type': 'application/json'
-      };
+      requestHeaders['Authorization'] = `Bearer ${activeZaiKey}`;
 
       requestPayload = {
         model: targetModel,
@@ -247,17 +243,14 @@ app.post('/v1/chat/completions', async (req, res) => {
     }
     // --- 2. Official DeepSeek API Route ---
     else if (isOfficialDeepSeek) {
-      const activeDeepSeekKey = DEEPSEEK_API_KEY || clientApiKey;
+      const activeDeepSeekKey = (DEEPSEEK_API_KEY && DEEPSEEK_API_KEY.trim()) ? DEEPSEEK_API_KEY.trim() : clientApiKey;
       if (!activeDeepSeekKey) {
         return res.status(401).json({
           error: { message: 'DEEPSEEK_API_KEY is missing in Vercel environment variables.', type: 'invalid_request_error', code: 401 }
         });
       }
       requestUrl = 'https://api.deepseek.com/chat/completions';
-      requestHeaders = {
-        'Authorization': `Bearer ${activeDeepSeekKey}`,
-        'Content-Type': 'application/json'
-      };
+      requestHeaders['Authorization'] = `Bearer ${activeDeepSeekKey}`;
 
       requestPayload = {
         model: targetModel,
@@ -269,13 +262,14 @@ app.post('/v1/chat/completions', async (req, res) => {
     }
     // --- 3. Mistral AI Official API Route ---
     else if (isMistralAPI) {
-      if (!MISTRAL_API_KEY) {
+      const activeMistralKey = (MISTRAL_API_KEY && MISTRAL_API_KEY.trim()) ? MISTRAL_API_KEY.trim() : clientApiKey;
+      if (!activeMistralKey) {
         return res.status(401).json({
           error: { message: 'MISTRAL_API_KEY is missing in Vercel environment variables.', type: 'invalid_request_error', code: 401 }
         });
       }
       requestUrl = 'https://api.mistral.ai/v1/chat/completions';
-      requestHeaders['Authorization'] = `Bearer ${MISTRAL_API_KEY}`;
+      requestHeaders['Authorization'] = `Bearer ${activeMistralKey}`;
 
       requestPayload = {
         model: targetModel,
@@ -295,18 +289,16 @@ app.post('/v1/chat/completions', async (req, res) => {
     }
     // --- 4. OpenRouter API Route ---
     else if (isOpenRouterAPI) {
-      if (!OPENROUTER_API_KEY) {
+      const activeOpenRouterKey = (OPENROUTER_API_KEY && OPENROUTER_API_KEY.trim()) ? OPENROUTER_API_KEY.trim() : clientApiKey;
+      if (!activeOpenRouterKey) {
         return res.status(401).json({
           error: { message: 'OPENROUTER_API_KEY is missing in Vercel environment variables.', type: 'invalid_request_error', code: 401 }
         });
       }
       requestUrl = 'https://openrouter.ai/api/v1/chat/completions';
-      requestHeaders = {
-        'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
-        'HTTP-Referer': 'https://tes-tis-tes.vercel.app',
-        'X-Title': 'Private Chatbot Client',
-        'Content-Type': 'application/json'
-      };
+      requestHeaders['Authorization'] = `Bearer ${activeOpenRouterKey}`;
+      requestHeaders['HTTP-Referer'] = 'https://tes-tis-tes.vercel.app';
+      requestHeaders['X-Title'] = 'Private Chatbot Client';
 
       requestPayload = {
         model: targetModel,
@@ -323,12 +315,13 @@ app.post('/v1/chat/completions', async (req, res) => {
     }
     // --- 5. NVIDIA NIM API Route ---
     else {
-      const activeApiKey = NIM_API_KEY || clientApiKey;
-      if (!activeApiKey || activeApiKey === 'dummy-key') {
+      const activeNvidiaKey = (NIM_API_KEY && NIM_API_KEY.trim()) ? NIM_API_KEY.trim() : clientApiKey;
+      if (!activeNvidiaKey || activeNvidiaKey === 'dummy-key') {
         return res.status(401).json({
           error: { message: 'NVIDIA API Key is missing.', type: 'invalid_request_error', code: 401 }
         });
       }
+      requestHeaders['Authorization'] = `Bearer ${activeNvidiaKey}`;
 
       const config = getModelConfig(targetModel, isThinkingEnabled);
       requestPayload = {
